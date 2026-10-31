@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Bell, ChevronDown, MapPin, Menu, Plus, Search, Heart, MessagesSquare, Store, FileSpreadsheet, Wallet, Check } from 'lucide-react';
+import { Bell, ChevronDown, LogOut, MapPin, Menu, Plus, Search, Heart, MessagesSquare, Store, FileSpreadsheet, Wallet, Check } from 'lucide-react';
 import { useWedding } from '@/lib/wedding-context';
 import { useApi, asRows } from '@/hooks/use-api';
 import { api } from '@/lib/api';
@@ -9,6 +9,7 @@ import { ago, cn } from '@/lib/utils';
 import { useAuth, ROLE_LABEL } from '@/lib/auth';
 import { Avatar } from '@/components/ui/primitives';
 import { G } from '@/lib/permissions';
+import { config, DEMO_PASSWORD, DEMO_USERS } from '@/lib/config';
 
 function useOutside(cb: () => void) {
   const ref = useRef<HTMLDivElement>(null);
@@ -99,6 +100,34 @@ const QUICK = [
   { l: 'Record Payment', i: Wallet, h: '/payments?new=1', r: G.FINANCE_WRITE },
 ] as const;
 
+function ProfileMenu({ close }: { close: () => void }) {
+  const { user, logout } = useAuth();
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const switchRole = async (email: string) => {
+    setBusy(email); setError(null);
+    try { await api.post('/auth/keycloak/login', { email, password: DEMO_PASSWORD }); window.location.href = '/dashboard'; }
+    catch (e) { setError(e instanceof Error ? e.message : 'Unable to switch role'); setBusy(null); }
+  };
+  return (
+    <div>
+      <div className="px-3 py-2.5"><p className="text-sm font-medium truncate">{user?.name}</p><p className="text-xs text-ink-soft truncate">{user?.email}</p>{user && <p className="text-xs text-burgundy mt-0.5">{ROLE_LABEL[user.role]}</p>}</div>
+      {config.demoMode && (
+        <div className="border-t border-line py-1.5" data-testid="role-switcher">
+          <p className="px-3 py-1 text-[11px] font-medium uppercase tracking-wide text-ink-soft">Switch demo role</p>
+          {DEMO_USERS.map((u) => (
+            <button key={u.email} disabled={!!busy || user?.email === u.email} onClick={() => switchRole(u.email)} className="w-full text-left px-3 py-1.5 rounded-lg hover:bg-surface-2 flex items-center justify-between text-sm disabled:opacity-60">
+              <span>{u.label}</span>{user?.email === u.email ? <Check className="h-3.5 w-3.5 text-success" /> : busy === u.email ? <span className="text-xs text-ink-soft">…</span> : <span className="text-xs text-ink-soft">{u.name}</span>}
+            </button>
+          ))}
+          {error && <p role="alert" className="px-3 py-1 text-xs text-danger">{error}</p>}
+        </div>
+      )}
+      <div className="border-t border-line pt-1.5"><button className="w-full text-left px-3 py-2 rounded-lg hover:bg-surface-2 flex items-center gap-2 text-sm" onClick={() => { close(); void logout(); }}><LogOut className="h-4 w-4 text-burgundy" />Sign out</button></div>
+    </div>
+  );
+}
+
 export function Topbar({ onMenu }: { onMenu: () => void }) {
   const router = useRouter();
   const { weddings, selected, select } = useWedding();
@@ -170,9 +199,9 @@ export function Topbar({ onMenu }: { onMenu: () => void }) {
             )}
           </Menu_>)}
 
-        <div className="hidden lg:flex items-center gap-2.5 pl-1" title={user ? ROLE_LABEL[user.role] : ''}>
-          <Avatar name={user?.name} size={38} />
-        </div>
+        <Menu_ trigger={() => <button className="flex items-center gap-2.5 pl-1 rounded-full" aria-label="Account menu" title={user ? ROLE_LABEL[user.role] : ''}><Avatar name={user?.name} size={38} /></button>} width="w-64">
+          {(close) => <ProfileMenu close={close} />}
+        </Menu_>
       </div>
     </header>
   );

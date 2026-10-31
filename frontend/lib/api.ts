@@ -1,3 +1,5 @@
+import { config } from './config';
+
 export interface ApiMeta { page?: number; pageSize?: number; total?: number; totalPages?: number }
 export interface ApiResult<T> { data: T; meta?: ApiMeta }
 
@@ -21,7 +23,7 @@ function qs(q?: Query): string {
 
 let refreshing: Promise<boolean> | null = null;
 async function tryRefresh(): Promise<boolean> {
-  refreshing ??= fetch('/api/v1/auth/refresh', { method: 'POST', credentials: 'include' })
+  refreshing ??= fetch(`${config.apiBase}/auth/refresh`, { method: 'POST', credentials: 'include' })
     .then((r) => r.ok)
     .catch(() => false)
     .finally(() => { setTimeout(() => (refreshing = null), 0); });
@@ -34,9 +36,9 @@ async function request<T>(method: string, path: string, opts: { body?: unknown; 
   if (opts.form) body = opts.form;
   else if (opts.body !== undefined) { headers['Content-Type'] = 'application/json'; body = JSON.stringify(opts.body); }
 
-  const res = await fetch(`/api/v1${path}${qs(opts.query)}`, { method, headers, body, credentials: 'include', cache: 'no-store' });
+  const res = await fetch(`${config.apiBase}${path}${qs(opts.query)}`, { method, headers, body, credentials: 'include', cache: 'no-store' });
 
-  if (res.status === 401 && opts.retry !== false && !['/auth/login', '/auth/refresh', '/auth/logout'].includes(path)) {
+  if (res.status === 401 && opts.retry !== false && !['/auth/login', '/auth/keycloak/login', '/auth/refresh', '/auth/logout'].includes(path)) {
     if (await tryRefresh()) return request<T>(method, path, { ...opts, retry: false });
     if (typeof window !== 'undefined' && path !== '/auth/me' && !location.pathname.startsWith('/login')) {
       location.href = `/login?next=${encodeURIComponent(location.pathname)}`;
@@ -67,4 +69,4 @@ export const api = {
   upload: <T>(path: string, form: FormData) => request<T>('POST', path, { form }),
 };
 
-export const apiUrl = (path: string) => `/api/v1${path}`;
+export const apiUrl = (path: string) => `${config.apiBase}${path}`;

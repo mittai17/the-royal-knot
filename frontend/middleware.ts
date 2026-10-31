@@ -12,4 +12,4 @@ export function middleware(req: NextRequest) {
   return NextResponse.next();
 }
 
-export const config = { matcher: ['/((?!login|api|socket.io|_next|favicon.ico).*)'] };
+export const config = { matcher: ['/((?!login|system-status|api|socket.io|_next|favicon.ico).*)'] };

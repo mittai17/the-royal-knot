@@ -13,10 +13,14 @@ docker compose -f ../docker-compose.infra.yml up -d      # postgres, redis, mini
 cp .env.example .env                                      # dev values are already in .env for localhost
 npm ci --legacy-peer-deps
 npx prisma migrate deploy                                 # apply migrations (use `migrate dev` while developing)
-npm run seed:dev                                          # wipes + seeds demo data (re-runnable)
+npm run seed:dev                                          # seeds demo data; no-op if already seeded (see Seeding)
 npm run start:dev                                         # http://localhost:4000
 ```
-Production build: `npm run build` (also compiles the seed into `dist/_seed`), then `node dist/main.js`; `npm run seed` uses the compiled seed.
+Production build: `npm run build` (also compiles the seed into `dist/_seed`), then `node dist/main.js`; `npm run seed` uses the compiled seed. **If you change `prisma/seed.ts`, re-run `npx tsc -p tsconfig.seed.json` (or `npm run build`) — `npm run seed` prefers the stale compiled copy.**
+
+### Seeding (idempotent)
+- `npm run seed` / `SEED_ON_START=true`: if the demo dataset is already present (≥ 25 weddings and the Mehta Wedding) the run changes nothing except upserting the 5 Keycloak demo users by email. Safe to run on every redeploy; verified by running it twice and diffing row counts.
+- `npm run seed:reset` (or `SEED_FORCE=true`): wipes **all** data and rebuilds the full dataset. Dev only.
 
 ## Environment
 | Variable | Purpose |
@@ -32,6 +36,13 @@ Production build: `npm run build` (also compiles the seed into `dist/_seed`), th
 | `AUTH_RATE_LIMIT` | Login attempts per minute per IP (default 10) |
 | `DISABLE_JOBS` | `true` skips registering the repeating reminder scan |
 | `DEMO_PASSWORD` | Seed only |
+| `SEED_FORCE` | `true` makes the seed wipe and rebuild (default: skip when already seeded) |
+| `KEYCLOAK_ENABLED` | `true` turns on the optional Keycloak integration (default `false`; built-in auth is always on) |
+| `KEYCLOAK_INTERNAL_URL` | How the backend reaches Keycloak, e.g. `http://keycloak:8080` (JWKS, password grant, health) |
+| `KEYCLOAK_REALM` / `KEYCLOAK_CLIENT_ID` | Default `royalknot` / `royalknot-web` (also accepted as `azp`: `KEYCLOAK_API_CLIENT_ID`, default `royalknot-api`) |
+| `KEYCLOAK_PUBLIC_ISSUER` | The issuer browsers see, e.g. `https://auth.example.com/realms/royalknot`. Defaults to the internal issuer |
+| `KEYCLOAK_CLIENT_SECRET` | Only if the login client is confidential |
+| `UPI_VPA` | Payee VPA used in UPI deep links (default `royalknot@upi`) |
 
 `JWT_REFRESH_SECRET` is accepted by the compose file but not needed: refresh tokens are opaque random values stored as SHA-256 hashes.
 
@@ -44,7 +55,33 @@ Production build: `npm run build` (also compiles the seed into `dist/_seed`), th
 | meera@royalknot.local | Finance Manager | Meera Iyer |
 | vikram@ / sana@royalknot.local | Operations Staff | Vikram Rathore / Sana Qureshi |
 
+### Keycloak demo users (also seeded into the app database; same password)
+| Login | Keycloak realm role | App role | Fixed id |
+|---|---|---|---|
+| arjun@royalknot.in | `FOUNDER` | Admin | `11111111-…` |
+| priya@royalknot.in | `WEDDING_PLANNER` | Planner | `22222222-…` |
+| kabir@royalknot.in | `EVENT_MANAGER` | Event Manager | `33333333-…` |
+| meera@royalknot.in | `FINANCE_MANAGER` | Finance | `44444444-…` |
+| rohan@royalknot.in | `OPS_STAFF` | Operations | `55555555-…` |
+
+These also work with the built-in `/auth/login`.
+
 **Change `DEMO_PASSWORD` before seeding any shared environment.** With `NODE_ENV=production` seeded users are flagged `mustChangePassword`.
+
+## Keycloak (optional, `KEYCLOAK_ENABLED=true`)
+Built-in cookie auth is unchanged. With the flag on:
+- `GET /api/v1/auth/keycloak/config` → `{enabled, realm, clientId, issuer, ...}`.
+- `POST /api/v1/auth/keycloak/login {email,password}` → password grant to Keycloak over `KEYCLOAK_INTERNAL_URL`, token verified, user upserted, then the app's own HttpOnly cookies are set (same-origin frontend flow).
+- `Authorization: Bearer <keycloak access token>` works on every route. Only non-HS256 tokens take this path (and only when no `access_token` cookie is present); the app's own HS256 tokens still go through passport.
+- **Split-horizon:** signing keys are fetched from `KEYCLOAK_INTERNAL_URL/realms/<realm>/protocol/openid-connect/certs`; the accepted `iss` is `KEYCLOAK_PUBLIC_ISSUER` (and the internal issuer). `azp` must be `royalknot-web` or `royalknot-api`.
+- Roles: `FOUNDER`→Admin, `WEDDING_PLANNER`→Planner, `EVENT_MANAGER`→Event Manager, `FINANCE_MANAGER`→Finance, `OPS_STAFF`→Operations (legacy names `founder_admin`, `operations_staff` also accepted). Highest privilege wins. A token with no mapped role gets 403. The local user is matched by **email** (so seeded users keep their ids), created on first sight (id = token `sub`), and its role follows Keycloak on every request.
+- With the flag off the two endpoints are 404 and an RS256 bearer token gets a plain 401.
+- Keycloak's admin API ignores a supplied user `id`; only a realm *import* honours fixed ids.
+
+## Health, system status, UPI
+- `GET /api/v1/health` (readiness): flat `checks` for database, redis, minio, gotenberg, keycloak (`up`/`down`, or `disabled` when the flag is off). 503 only if the database is down; other failures give `degraded`.
+- `GET /api/v1/system/status` (public): per-service `{status, latencyMs}`, version, uptime.
+- `GET /api/v1/payments/upi-qr?milestoneId=` (finance-read roles): `upi://pay?...` link for the milestone's outstanding amount; no external call.
 
 ## Architecture
 ```

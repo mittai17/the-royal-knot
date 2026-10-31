@@ -1,16 +1,30 @@
 import { CanActivate, ExecutionContext, ForbiddenException, Injectable } from '@nestjs/common';
+import { decodeProtectedHeader } from 'jose';
 import { Reflector } from '@nestjs/core';
 import { AuthGuard } from '@nestjs/passport';
 import { Role } from '@prisma/client';
 import { IS_PUBLIC, ROLES_KEY } from './decorators';
 import { env } from '../config/env';
+import { KeycloakService } from '../modules/auth/keycloak.service';
 
 @Injectable()
 export class JwtAuthGuard extends AuthGuard('jwt') {
-  constructor(private reflector: Reflector) { super(); }
-  canActivate(ctx: ExecutionContext) {
+  constructor(private reflector: Reflector, private keycloak: KeycloakService) { super(); }
+  async canActivate(ctx: ExecutionContext): Promise<boolean> {
     if (this.reflector.getAllAndOverride<boolean>(IS_PUBLIC, [ctx.getHandler(), ctx.getClass()])) return true;
-    return super.canActivate(ctx);
+    // Keycloak access tokens are asymmetric (RS256); the app's own tokens are HS256 and go through passport.
+    if (this.keycloak.enabled) {
+      const req = ctx.switchToHttp().getRequest();
+      const m = /^Bearer (.+)$/i.exec(req.headers?.authorization ?? '');
+      if (m && !req.cookies?.access_token && this.isAsymmetric(m[1])) {
+        req.user = await this.keycloak.authenticate(m[1]);
+        return true;
+      }
+    }
+    return (await super.canActivate(ctx)) as boolean;
+  }
+  private isAsymmetric(token: string) {
+    try { return decodeProtectedHeader(token).alg !== 'HS256'; } catch { return false; }
   }
 }
 

@@ -5,7 +5,7 @@ import { AllExceptionsFilter } from './common/filters';
 import { JwtAuthGuard, OriginGuard, RolesGuard } from './common/guards';
 import { LoggingInterceptor, ResponseInterceptor } from './common/interceptors';
 import { DatabaseModule } from './database/prisma.service';
-import { HealthController } from './health/health.controller';
+import { HealthController, HealthService, SystemController } from './health/health.controller';
 import { JobsModule } from './jobs/jobs.module';
 import { AgreementsModule } from './modules/agreements/agreements.module';
 import { AnalyticsModule } from './modules/analytics/analytics.module';
@@ -32,8 +32,9 @@ import { WebsocketModule } from './websocket/websocket.module';
     DatabaseModule, AuditModule, WebsocketModule, NotificationsModule, DocumentsModule, ReconciliationModule,
     AuthModule, UsersModule, EnquiriesModule, WeddingsModule, AgreementsModule, VendorsModule, QuotationsModule, TasksModule, EventsModule, GuestsModule, PaymentsModule, ExpensesModule, AnalyticsModule, JobsModule,
   ],
-  controllers: [HealthController],
+  controllers: [HealthController, SystemController],
   providers: [
+    HealthService,
     { provide: APP_GUARD, useClass: ThrottlerGuard },
     { provide: APP_GUARD, useClass: OriginGuard },
     { provide: APP_GUARD, useClass: JwtAuthGuard },

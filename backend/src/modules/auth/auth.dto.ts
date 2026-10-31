@@ -11,3 +11,8 @@ export class ChangePasswordDto {
   @Matches(/(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/, { message: 'Password needs upper, lower case letters and a digit' })
   newPassword: string;
 }
+
+export class KeycloakLoginDto {
+  @IsEmail() email: string;
+  @IsString() @MaxLength(128) password: string;
+}

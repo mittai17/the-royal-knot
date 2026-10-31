@@ -5,11 +5,12 @@ import type { Request, Response } from 'express';
 import { env } from '../../config/env';
 import { AuthUser, CurrentUser, Public } from '../../common/decorators';
 import { ACCESS_TTL_S, AuthService, REFRESH_TTL_DAYS } from './auth.service';
-import { ChangePasswordDto, LoginDto } from './auth.dto';
+import { ChangePasswordDto, KeycloakLoginDto, LoginDto } from './auth.dto';
+import { KeycloakService } from './keycloak.service';
 
 @ApiTags('auth') @Controller('auth')
 export class AuthController {
-  constructor(private auth: AuthService) {}
+  constructor(private auth: AuthService, private keycloak: KeycloakService) {}
 
   private setCookies(res: Response, access: string, refresh: string) {
     const base = { httpOnly: true, secure: env.cookieSecure, sameSite: 'lax' as const };
@@ -20,6 +21,21 @@ export class AuthController {
   @Public() @Post('login') @HttpCode(200) @Throttle({ default: { limit: () => env.authRateLimit, ttl: 60_000 } })
   async login(@Body() dto: LoginDto, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
     const r = await this.auth.login(dto.email, dto.password, req.ip);
+    this.setCookies(res, r.access, r.refresh);
+    return { user: r.user };
+  }
+
+  /** Public realm/client info for UIs. 404 unless KEYCLOAK_ENABLED=true. */
+  @Public() @Get('keycloak/config')
+  keycloakConfig() { this.keycloak.assertEnabled(); return this.keycloak.publicConfig(); }
+
+  /** Password grant against Keycloak (internal URL), then the app's own HttpOnly cookie session. */
+  @Public() @Post('keycloak/login') @HttpCode(200) @Throttle({ default: { limit: () => env.authRateLimit, ttl: 60_000 } })
+  async keycloakLogin(@Body() dto: KeycloakLoginDto, @Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    this.keycloak.assertEnabled();
+    const token = await this.keycloak.passwordGrant(dto.email.toLowerCase(), dto.password);
+    const user = await this.keycloak.upsertFromClaims(await this.keycloak.verify(token));
+    const r = await this.auth.sessionFor(user, 'keycloak', req.ip);
     this.setCookies(res, r.access, r.refresh);
     return { user: r.user };
   }

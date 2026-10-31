@@ -574,3 +574,42 @@ describe('11. platform behaviour', () => {
     expect(await prisma.document.count({ where: { weddingId, category: 'FINAL_REPORT' } })).toBe(1);
   });
 });
+
+describe('16. keycloak integration, system status, UPI link', () => {
+  it('keycloak endpoints are 404 unless KEYCLOAK_ENABLED=true, and built-in auth is unaffected', async () => {
+    expect(process.env.KEYCLOAK_ENABLED).not.toBe('true');
+    await request(url).get('/api/v1/auth/keycloak/config').expect(404);
+    await request(url).post('/api/v1/auth/keycloak/login').send({ email: 'arjun@royalknot.in', password: PASSWORD }).expect(404);
+    await agents.founder.get('/api/v1/auth/me').expect(200);
+  });
+  it('rejects an asymmetric (Keycloak-style) bearer token when the integration is off', async () => {
+    const fake = `${Buffer.from('{"alg":"RS256","kid":"x"}').toString('base64url')}.${Buffer.from('{"sub":"x"}').toString('base64url')}.sig`;
+    await request(url).get('/api/v1/auth/me').set('Authorization', `Bearer ${fake}`).expect(401);
+  });
+  it('health reports keycloak as disabled (not down) and stays ok', async () => {
+    const h = d(await request(url).get('/api/v1/health').expect(200));
+    expect(h.checks.keycloak).toBe('disabled');
+    expect(h.status).toBe('ok');
+  });
+  it('system status lists every service with latency', async () => {
+    const s = d(await request(url).get('/api/v1/system/status').expect(200));
+    expect(Object.keys(s.services).sort()).toEqual(['database', 'gotenberg', 'keycloak', 'minio', 'redis']);
+    expect(s.services.database.status).toBe('up');
+    expect(typeof s.services.database.latencyMs).toBe('number');
+    expect(s.services.keycloak).toEqual({ status: 'disabled', latencyMs: null });
+  });
+  it('seeded Keycloak demo users exist with their fixed ids and roles', async () => {
+    const u = await prisma.user.findMany({ where: { email: { endsWith: '@royalknot.in' } }, orderBy: { id: 'asc' } });
+    expect(u.map((x) => [x.id[0], x.email.split('@')[0], x.role])).toEqual([['1', 'arjun', 'ADMIN'], ['2', 'priya', 'PLANNER'], ['3', 'kabir', 'EVENT_MANAGER'], ['4', 'meera', 'FINANCE'], ['5', 'rohan', 'OPERATIONS']]);
+  });
+  it('builds a UPI deep link for an unpaid milestone, restricted to finance-read roles', async () => {
+    const list = d(await agents.meera.get('/api/v1/payments/milestones?pageSize=100'));
+    const open = list.find((m: any) => m.status !== 'PAID');
+    const r = d(await agents.meera.get(`/api/v1/payments/upi-qr?milestoneId=${open.id}`).expect(200));
+    expect(r.upiUri).toMatch(/^upi:\/\/pay\?pa=.+&pn=The%20Royal%20Knot&am=\d+\.\d{2}&cu=INR/);
+    expect(Number(r.amount)).toBe(Number(open.outstanding));
+    await agents.vikram.get(`/api/v1/payments/upi-qr?milestoneId=${open.id}`).expect(403);
+    await agents.meera.get('/api/v1/payments/upi-qr?milestoneId=00000000-0000-4000-8000-000000000000').expect(404);
+    await agents.meera.get('/api/v1/payments/upi-qr?milestoneId=nope').expect(400);
+  });
+});

@@ -2,7 +2,9 @@
 /**
  * Seed: users, vendors, templates (plain Prisma) + 25 weddings. The flagship "Mehta Wedding" is driven
  * through the real Nest services so demo data obeys the same business rules as live use.
- * Re-runnable: wipes all data first. Demo password comes from DEMO_PASSWORD (dev only).
+ * Idempotent by default: when the database already holds the demo dataset the run is a no-op apart from upserting the
+ * Keycloak demo users, so SEED_ON_START=true never duplicates (or wipes) data on a redeploy. SEED_FORCE=true wipes and rebuilds.
+ * Demo password comes from DEMO_PASSWORD (dev only).
  */
 import 'reflect-metadata';
 import 'dotenv/config';
@@ -129,6 +131,27 @@ const OTHERS: Cfg[] = [
 
 const SHARE: Partial<Record<VendorCategory, number>> = { VENUE: 0.24, CATERING: 0.22, DECORATION: 0.2, PHOTOGRAPHY: 0.06, MAKEUP: 0.03, ENTERTAINMENT: 0.06, LIGHTING: 0.07, TRANSPORTATION: 0.06, ACCOMMODATION: 0.06 };
 
+/** Demo users that mirror the Keycloak realm import (fixed ids). Upserted by email, so safe to run any number of times. */
+const KEYCLOAK_USERS: { id: string; email: string; name: string; role: Role; phone: string }[] = [
+  { id: '11111111-1111-1111-1111-111111111111', email: 'arjun@royalknot.in', name: 'Arjun Rao', role: 'ADMIN', phone: '+91 98290 00101' },
+  { id: '22222222-2222-2222-2222-222222222222', email: 'priya@royalknot.in', name: 'Priya Nair', role: 'PLANNER', phone: '+91 98290 00102' },
+  { id: '33333333-3333-3333-3333-333333333333', email: 'kabir@royalknot.in', name: 'Kabir Sethi', role: 'EVENT_MANAGER', phone: '+91 98290 00103' },
+  { id: '44444444-4444-4444-4444-444444444444', email: 'meera@royalknot.in', name: 'Meera Shah', role: 'FINANCE', phone: '+91 98290 00104' },
+  { id: '55555555-5555-5555-5555-555555555555', email: 'rohan@royalknot.in', name: 'Rohan Das', role: 'OPERATIONS', phone: '+91 98290 00105' },
+];
+
+async function upsertKeycloakUsers() {
+  const passwordHash = await argon2.hash(PASSWORD);
+  for (const u of KEYCLOAK_USERS) {
+    await prisma.user.upsert({
+      where: { email: u.email },
+      update: { name: u.name, role: u.role, phone: u.phone, status: 'ACTIVE' },
+      create: { ...u, passwordHash, mustChangePassword: false },
+    });
+  }
+  console.log(`Keycloak demo users upserted: ${KEYCLOAK_USERS.map((u) => u.email).join(', ')}`);
+}
+
 async function wipe() {
   const rows = await prisma.$queryRaw<{ tablename: string }[]>`SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename <> '_prisma_migrations'`;
   await prisma.$executeRawUnsafe(`TRUNCATE TABLE ${rows.map((r) => `"${r.tablename}"`).join(', ')} RESTART IDENTITY CASCADE`);
@@ -136,6 +159,12 @@ async function wipe() {
 
 async function main() {
   console.log('Seeding The Royal Knot…');
+  const already = (await prisma.wedding.count()) >= 25 && !!(await prisma.wedding.findFirst({ where: { name: 'Mehta Wedding' } }));
+  if (already && process.env.SEED_FORCE !== 'true') {
+    console.log('Demo dataset already present — skipping (set SEED_FORCE=true to wipe and rebuild).');
+    await upsertKeycloakUsers();
+    return;
+  }
   await wipe();
 
   // ---------- users & teams ----------
@@ -507,11 +536,13 @@ async function main() {
   }
 
   await app.close();
+  await upsertKeycloakUsers();
 
   const counts = { users: await prisma.user.count(), weddings: await prisma.wedding.count(), vendors: await prisma.vendor.count(), tasks: await prisma.weddingTask.count(), mehtaTasks: await prisma.weddingTask.count({ where: { weddingId: WID } }), guests: await prisma.guest.count(), enquiries: await prisma.enquiry.count(), quotations: await prisma.quotation.count(), payments: await prisma.clientPayment.count(), expenses: await prisma.expense.count(), notifications: await prisma.notification.count(), activity: await prisma.activityLog.count(), documents: await prisma.document.count() };
   console.log('Seed complete:', counts);
   console.log(`Mehta wedding id: ${WID}`);
   console.log(`Demo login (dev only): <role>@royalknot.local / ${PASSWORD}  — founder, neha, arjun, rahul, priya, karan, meera, vikram, sana`);
+  console.log(`Keycloak demo users (same password): ${KEYCLOAK_USERS.map((u) => u.email).join(', ')}`);
 }
 
 main().then(() => prisma.$disconnect()).then(() => process.exit(0)).catch(async (e) => { console.error(e); await prisma.$disconnect(); process.exit(1); });

@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException, StreamableFile, UnprocessableEntityException } from '@nestjs/common';
 import { MilestoneStatus, Prisma } from '@prisma/client';
+import { env } from '../../config/env';
 import { randomBytes } from 'crypto';
 import { AuthUser } from '../../common/decorators';
 import { D, milestoneStatus, money, sum } from '../../common/finance';
@@ -45,6 +46,16 @@ export class PaymentsService {
     const total = live.length;
     const items = live.slice((q.page - 1) * q.pageSize, q.page * q.pageSize);
     return new Paginated(items.map(({ payments, ...m }) => m), { page: q.page, pageSize: q.pageSize, total });
+  }
+
+  async upiLink(milestoneId: string) {
+    const m = await this.prisma.paymentMilestone.findUnique({ where: { id: milestoneId }, include: { payments: true, wedding: { select: { name: true } } } });
+    if (!m) throw new NotFoundException('Milestone not found');
+    const live = this.live(m);
+    if (live.outstanding.lte(0)) throw new UnprocessableEntityException('Milestone is already fully paid');
+    const note = `${m.wedding.name} ${m.type}`.slice(0, 60);
+    const params = new URLSearchParams({ pa: env.upiVpa, pn: 'The Royal Knot', am: live.outstanding.toFixed(2), cu: 'INR', tn: note });
+    return { milestoneId, milestone: m.type, amount: live.outstanding.toFixed(2), currency: 'INR', payee: env.upiVpa, upiUri: `upi://pay?${params.toString().replace(/\+/g, '%20')}` };
   }
 
   newReceiptNo() { return `RK-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${randomBytes(3).toString('hex').toUpperCase()}`; }

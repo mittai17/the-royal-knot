@@ -27,3 +27,7 @@ export class MilestoneQuery extends PageQuery {
   @IsOptional() @IsString() status?: string;
   @IsOptional() @Type(() => Number) @IsInt() withinDays?: number;
 }
+
+export class UpiQrQuery {
+  @IsUUID() milestoneId: string;
+}

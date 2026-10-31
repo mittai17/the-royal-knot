@@ -21,5 +21,20 @@ export const env = {
   },
   get smtp() { return { host: get('SMTP_HOST', ''), port: parseInt(get('SMTP_PORT', '1025'), 10), from: first(['SMTP_FROM', 'MAIL_FROM'], 'hello@theroyalknot.local') }; },
   get authRateLimit() { return parseInt(get('AUTH_RATE_LIMIT', '10'), 10); },
+  get upiVpa() { return get('UPI_VPA', 'royalknot@upi'); },
+  /** Optional self-hosted Keycloak IdP. Built-in cookie auth keeps working whether or not this is on. */
+  get keycloak() {
+    const internalUrl = get('KEYCLOAK_INTERNAL_URL', 'http://keycloak:8080').replace(/\/$/, '');
+    const realm = get('KEYCLOAK_REALM', 'royalknot');
+    const internalIssuer = `${internalUrl}/realms/${realm}`;
+    return {
+      enabled: get('KEYCLOAK_ENABLED', 'false') === 'true',
+      internalUrl, realm, internalIssuer,
+      publicIssuer: get('KEYCLOAK_PUBLIC_ISSUER', internalIssuer),
+      clientId: get('KEYCLOAK_CLIENT_ID', 'royalknot-web'),
+      clientSecret: get('KEYCLOAK_CLIENT_SECRET', ''),
+      apiClientId: get('KEYCLOAK_API_CLIENT_ID', 'royalknot-api'),
+    };
+  },
   get disableJobs() { return get('DISABLE_JOBS', 'false') === 'true'; },
 };

@@ -38,6 +38,13 @@ export class AuthService {
     return { user: this.publicUser(user), access: this.accessToken(user), refresh: await this.issueRefresh(user.id) };
   }
 
+  /** Issues the app's own cookie session for an already-authenticated user (e.g. verified by Keycloak). */
+  async sessionFor(user: User, via: string, ip?: string) {
+    await this.prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
+    await this.audit.log({ actorId: user.id, entity: 'User', entityId: user.id, action: 'login', message: `${user.name} signed in via ${via}`, meta: { ip, via } });
+    return { user: this.publicUser(user), access: this.accessToken(user), refresh: await this.issueRefresh(user.id) };
+  }
+
   /** Rotation: every refresh token is single-use. Re-use of a revoked token revokes the whole family (theft detection). */
   async refresh(token?: string) {
     if (!token) throw new UnauthorizedException('No refresh token');

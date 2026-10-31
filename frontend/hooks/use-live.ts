@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useRef } from 'react';
 import { io, type Socket } from 'socket.io-client';
+import { config } from '@/lib/config';
 
 export type LiveEvent = 'vendor.arrival' | 'timeline.updated' | 'incident.created' | 'incident.updated' | 'task.updated' | 'guests.updated' | 'event.status' | 'notification';
 
@@ -12,7 +13,7 @@ export function useLive(weddingId: string | null, onEvent: (e: LiveEvent, payloa
 
   useEffect(() => {
     if (!weddingId) return;
-    const socket: Socket = io('/live', { withCredentials: true, reconnectionDelayMax: 5000 });
+    const socket: Socket = io(`${config.wsUrl}/live`, { withCredentials: true, reconnectionDelayMax: 5000 });
     const events: LiveEvent[] = ['vendor.arrival', 'timeline.updated', 'incident.created', 'incident.updated', 'task.updated', 'guests.updated', 'event.status', 'notification'];
     events.forEach((ev) => socket.on(ev, (p: unknown) => cb.current(ev, p)));
     socket.on('connect', () => {
