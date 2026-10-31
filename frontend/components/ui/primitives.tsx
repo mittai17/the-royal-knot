@@ -86,8 +86,8 @@ export function Card({ title, action, children, className, pad = true }: { title
   return (
     <section className={cn('card min-w-0', className)}>
       {(title || action) && (
-        <header className="flex items-center justify-between gap-3 px-5 pt-4 pb-3">
-          <h2 className="font-serif text-lg text-burgundy-deep truncate min-w-0">{title}</h2><div className="shrink-0">{action}</div>
+        <header className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-5 pt-4 pb-3">
+          <h2 className="font-serif text-lg text-burgundy-deep min-w-0">{title}</h2><div className="shrink-0">{action}</div>
         </header>
       )}
       <div className={pad ? 'px-5 pb-5' : ''}>{children}</div>

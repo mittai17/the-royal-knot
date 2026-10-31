@@ -33,13 +33,23 @@ Stack: Next.js 15 (App Router) + React 19, TS strict, Tailwind 3, Recharts, TanS
 - npm resolved TypeScript 7 (Next 15 cannot read tsconfig with it) and TanStack Table v9 alpha; both are pinned (`typescript@5`, `@tanstack/react-table@8`). Keep the lockfile in Docker builds.
 - `next.config.mjs` sets `skipTrailingSlashRedirect` and an explicit `/socket.io` rewrite, otherwise the Socket.IO handshake through the proxy 404s. WebSocket upgrade through the Next proxy is not verified; the client uses polling-then-upgrade, so it works on polling alone. In Dokploy, routing `/socket.io` straight to the backend via Traefik is the better setup.
 
+**UI polish / QA pass (verified)**
+- Browser-extension control was not available in this environment; all checks used the Playwright Chromium. I looked at screenshots of every sidebar screen at 1440 px, and of all 11 wedding tabs, quotation comparison and Command Centre. I looked closely at mobile (390 px) for dashboard, enquiries, tasks, command centre and payments. Tablet (820 px) was checked by the automated sweep only (no overflow, no console/API errors), not by eye.
+- Automated sweep `e2e/qa.spec.ts` (every screen + 11 wedding tabs x 3 viewports): founder, operations (sana), event manager (priya) finished with 0 console errors, 0 failed API calls and 0 horizontal page overflow after the fixes. Finance (meera) and planner (neha) were swept before the last round of edits and also had 0 issues.
+- Fixed: dashboard panel overflow (Task Overview legend, Upcoming Payments / Live Vendor titles), truncated vendor names, KPI labels on narrow widths, mobile page overflow (cards need `min-w-0`), Kanban columns clipped at 1440 px, Command Centre vendor list stretching the page (now scrolls, incidents first), Expenses chart (horizontal bars sized to the data), Documents "Uploaded" column wrapping, wide tables (first column stays pinned, min width 720 px so they scroll inside the card), milestone order (Booking, Advance, Final), "signed in" audit noise in Recent Activity, Settings checklist templates collapsed by default, wedding selector reachable on mobile.
+- Role-aware UI (mirrors `backend/src/common/permissions.ts` in `frontend/lib/permissions.ts`): sidebar items, quick-create menu, write buttons, Payments/Expenses/Reports page gate, wedding Payments/Expenses tabs and the Command Centre controls are hidden or disabled for roles the API refuses. Before this the UI offered actions that returned 403.
+- `e2e/flows.spec.ts` (7 UI-driven tests, run against a fresh wedding so demo data is untouched) pass: agreement generate + drawn signature + sign, document upload then byte-identical download, CSV guest import (12 rows), finance recording the booking milestone in the UI which generates >25 tasks, Kanban drag persisting status, vendor quote selection then a vendor advance recorded once, role-restricted UI for finance and operations. With `smoke.spec.ts` that is 15/15 passing on the production build (`npm run build` + `tsc --noEmit` clean).
+
 **Not done / limitations**
-- No browser-extension control was available; visual checks used Playwright screenshots, and I reviewed only dashboard, command centre, quotation comparison and reconciliation closely. Other screens are asserted by the smoke test, not by eye.
-- Responsive/mobile layouts were not inspected on a real small viewport.
-- Not exercised by tests: agreement signing, document upload/preview, CSV import, task drag-and-drop, quotation select (decision is already made in seed data), vendor payment, settle, role-restricted views (only the Founder login was used).
-- Pages that call endpoints the backend does not provide were removed (no summary/profitability PDF buttons). `/users/:id` is used for team activity.
+- Vendor settle (invoice + settle modal) and charge approval are role-gated and typed, but have no UI test; the backend settle flow is covered by backend e2e tests.
+- Event-day timeline buttons, arrival buttons and incident resolve have no UI test beyond the live-incident push test.
+- Planner/finance were not re-swept after the last cosmetic header change; founder/ops/event-manager were.
+- The full suite fires many logins and can hit the backend login limit (`AUTH_RATE_LIMIT`, default 10/min); run with `--workers=1` or raise the limit for CI.
+- Pages that call endpoints the backend does not provide were removed (no summary/profitability PDF buttons).
 - The wedding selector's last choice is kept in localStorage (per-viewer convenience only).
-- Dashboard shows 190 pending tasks and a Pending/Overdue donut computed from seed data; nothing is hardcoded.
+- Hero banner and wedding card covers are CSS gradients/SVG, not photographs (no external image hosts by design), so they are plainer than the reference image.
+- Test runs left some rows in the dev database (an "E2E" enquiry, a few uploaded test documents, extra "Flow Bride" weddings). Re-run the seed for a clean demo.
+- The seeded Booking milestone is due after the Advance milestone (backend seed data); the UI now orders by milestone type regardless.
 
 ## Backend (Backend agent)
 NestJS 11 + Prisma 6 + PostgreSQL 16, port 4000, prefix `/api/v1`. Full notes in `backend/README.md`; ER plan in `backend/docs/ER.md`.
