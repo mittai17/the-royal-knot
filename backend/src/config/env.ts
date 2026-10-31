@@ -20,6 +20,7 @@ export const env = {
     };
   },
   get smtp() { return { host: get('SMTP_HOST', ''), port: parseInt(get('SMTP_PORT', '1025'), 10), from: first(['SMTP_FROM', 'MAIL_FROM'], 'hello@theroyalknot.local') }; },
+  get apiRateLimit() { return parseInt(get('API_RATE_LIMIT', '600'), 10); },
   get authRateLimit() { return parseInt(get('AUTH_RATE_LIMIT', '10'), 10); },
   get upiVpa() { return get('UPI_VPA', 'royalknot@upi'); },
   /** Optional self-hosted Keycloak IdP. Built-in cookie auth keeps working whether or not this is on. */

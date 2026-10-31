@@ -15,9 +15,9 @@ export const REFRESH_TTL_DAYS = 7;
 export class AuthService {
   constructor(private prisma: PrismaService, private jwt: JwtService, private audit: AuditService) {}
 
-  publicUser(u: User) { return { id: u.id, email: u.email, name: u.name, role: u.role, mustChangePassword: u.mustChangePassword, phone: u.phone }; }
+  publicUser(u: User) { return { id: u.id, email: u.email, name: u.name, role: u.role, mustChangePassword: u.mustChangePassword, phone: u.phone, vendorId: u.vendorId, coupleId: u.coupleId }; }
 
-  private accessToken(u: User) { return this.jwt.sign({ sub: u.id, role: u.role }, { secret: env.jwtSecret, expiresIn: ACCESS_TTL_S }); }
+  private accessToken(u: User) { return this.jwt.sign({ sub: u.id, role: u.role, vendorId: u.vendorId ?? undefined, coupleId: u.coupleId ?? undefined }, { secret: env.jwtSecret, expiresIn: ACCESS_TTL_S }); }
 
   private async issueRefresh(userId: string, family: string = randomUUID()) {
     const token = randomBytes(48).toString('base64url');

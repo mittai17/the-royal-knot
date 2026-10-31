@@ -1,9 +1,9 @@
-export type Role = 'ADMIN' | 'PLANNER' | 'EVENT_MANAGER' | 'FINANCE' | 'OPERATIONS';
+export type Role = 'ADMIN' | 'PLANNER' | 'EVENT_MANAGER' | 'FINANCE' | 'OPERATIONS' | 'CLIENT' | 'VENDOR' | 'SYSADMIN';
 
 /** Prisma Decimal fields serialise as strings; always pass through toNum()/inr(). */
 export type Money = string | number;
 
-export interface User { id: string; name: string; email: string; role: Role; status?: string; phone?: string | null; available?: boolean; monthlyCost?: Money; mustChangePassword?: boolean; lastLoginAt?: string | null }
+export interface User { id: string; name: string; email: string; role: Role; status?: string; phone?: string | null; available?: boolean; monthlyCost?: Money; mustChangePassword?: boolean; lastLoginAt?: string | null; vendorId?: string | null; coupleId?: string | null }
 export interface UserRef { id: string; name: string }
 export interface Couple { id: string; brideName: string; groomName: string; phone?: string | null; email?: string | null; address?: string | null }
 

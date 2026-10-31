@@ -15,7 +15,7 @@ export function Hero({ name, weddings, inProgress, followUps }: { name: string; 
         </g>
       </svg>
       <div className="relative p-7 max-w-xl">
-        <h2 className="font-serif text-[34px] leading-10">{greet}, {name.split(' ')[0]}.</h2>
+        <h1 className="font-serif text-[34px] leading-10">{greet}, {name.split(' ')[0]}.</h1>
         <p className="font-serif text-lg text-white/85 mt-1">Let’s create extraordinary celebrations.</p>
         <p className="text-sm text-white/65 mt-3">{weddings} weddings this season <span className="mx-1.5">•</span> {inProgress} in progress <span className="mx-1.5">•</span> {followUps} enquiries awaiting follow-up</p>
         <Link href="/weddings?new=1" className="mt-4 inline-flex items-center gap-2 h-10 px-5 rounded-lg bg-white text-burgundy-deep text-sm font-medium hover:bg-gold-soft transition-colors">Create New Wedding <ArrowRight className="h-4 w-4" /></Link>

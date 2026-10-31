@@ -6,6 +6,7 @@ import { syncMilestones } from '../../common/milestones';
 import { Paginated } from '../../common/pagination';
 import { G } from '../../common/permissions';
 import { PrismaService } from '../../database/prisma.service';
+import { ScopeService } from '../../common/scope.service';
 import { AuditService } from '../audit/audit.service';
 import { CreateWeddingDto, EventInputDto, UpdateWeddingDto, WeddingQuery } from './weddings.dto';
 
@@ -14,7 +15,14 @@ const EVENT_NAMES: Record<EventKind, string> = { MEHENDI: 'Mehendi', SANGEET: 'S
 
 @Injectable()
 export class WeddingsService {
-  constructor(private prisma: PrismaService, private audit: AuditService) {}
+  constructor(private prisma: PrismaService, private audit: AuditService, private scope: ScopeService) {}
+
+  /** Vendors must not see the commercial terms between the planner and the couple. */
+  private redact<T extends Record<string, unknown>>(w: T, u: AuthUser): T {
+    if (u.role !== Role.VENDOR) return w;
+    const { budget: _b, contractValue: _c, ...rest } = w as Record<string, unknown>;
+    return rest as T;
+  }
 
   canSeeFinance(role: Role) { return role === Role.ADMIN || G.FINANCE_READ.includes(role); }
 
@@ -49,8 +57,9 @@ export class WeddingsService {
     return this.get(w.id, actor);
   }
 
-  async list(q: WeddingQuery) {
+  async list(q: WeddingQuery, user?: AuthUser) {
     const where: Prisma.WeddingWhereInput = {
+      ...(user ? this.scope.weddingWhere(user) : {}),
       ...(q.status ? { status: q.status } : {}), ...(q.packageType ? { packageType: q.packageType } : {}), ...(q.plannerId ? { plannerId: q.plannerId } : {}),
       ...(q.location ? { location: { contains: q.location, mode: 'insensitive' } } : {}),
       ...(q.search ? { OR: [{ name: { contains: q.search, mode: 'insensitive' } }, { location: { contains: q.search, mode: 'insensitive' } }, { venue: { contains: q.search, mode: 'insensitive' } }, { couple: { OR: [{ brideName: { contains: q.search, mode: 'insensitive' } }, { groomName: { contains: q.search, mode: 'insensitive' } }] } }] } : {}),
@@ -61,7 +70,7 @@ export class WeddingsService {
       this.prisma.wedding.count({ where }),
     ]);
     const progress = await this.progressFor(rows.map((r) => r.id));
-    return new Paginated(rows.map((r) => ({ ...r, progress: progress[r.id] ?? 0 })), { page: q.page, pageSize: q.pageSize, total });
+    return new Paginated(rows.map((r) => this.redact({ ...r, progress: progress[r.id] ?? 0 }, user ?? ({ role: Role.ADMIN } as AuthUser))), { page: q.page, pageSize: q.pageSize, total });
   }
 
   async progressFor(ids: string[]) {
@@ -77,6 +86,7 @@ export class WeddingsService {
   }
 
   async get(id: string, user: AuthUser) {
+    await this.scope.assertWeddingAccess(user, id);
     const w = await this.prisma.wedding.findUnique({ where: { id }, include: { couple: true, planner: { select: { id: true, name: true, email: true } }, events: { orderBy: { date: 'asc' } }, agreements: { select: { id: true, version: true, status: true, createdAt: true } } } });
     if (!w) throw new NotFoundException('Wedding not found');
     const [progress, counts, guestStats] = await Promise.all([
@@ -90,7 +100,7 @@ export class WeddingsService {
       const received = D(pay._sum.amount);
       finance = { contractValue: w.contractValue, received, outstanding: D(w.contractValue).minus(received), milestones: ms };
     }
-    return { ...w, progress: progress[id] ?? 0, counts: { tasks: counts[0], vendors: counts[1], guests: counts[2], openIncidents: counts[3], documents: counts[4] }, confirmedGuests: guestStats._count + (guestStats._sum.plusOnes ?? 0), finance };
+    return this.redact({ ...w, progress: progress[id] ?? 0, counts: { tasks: counts[0], vendors: counts[1], guests: counts[2], openIncidents: counts[3], documents: counts[4] }, confirmedGuests: guestStats._count + (guestStats._sum.plusOnes ?? 0), finance }, user);
   }
 
   async update(id: string, dto: UpdateWeddingDto, actor: AuthUser) {
@@ -116,7 +126,11 @@ export class WeddingsService {
     return w;
   }
 
-  events(weddingId: string) { return this.prisma.weddingEvent.findMany({ where: { weddingId }, orderBy: { date: 'asc' } }); }
+  async events(weddingId: string, user?: AuthUser) {
+    if (user) await this.scope.assertWeddingAccess(user, weddingId);
+    return this.eventsOf(weddingId);
+  }
+  private eventsOf(weddingId: string) { return this.prisma.weddingEvent.findMany({ where: { weddingId }, orderBy: { date: 'asc' } }); }
   addEvent(weddingId: string, e: { kind: EventKind; name?: string; date: string; venue?: string; expectedGuests?: number }) {
     return this.prisma.weddingEvent.create({ data: { weddingId, kind: e.kind, name: e.name ?? EVENT_NAMES[e.kind], date: new Date(e.date), venue: e.venue, expectedGuests: e.expectedGuests ?? 0 } });
   }

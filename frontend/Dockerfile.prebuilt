@@ -1,0 +1,12 @@
+# Prebuilt frontend image: NO network work. Build context is the staging dir produced by
+# deploy/scripts/build-images.sh: standalone/ (contents of .next/standalone), static/ (.next/static), public/.
+# NEXT_PUBLIC_* and BACKEND_URL are baked in at `next build` time on the host (see build-images.sh).
+FROM node:22-alpine
+WORKDIR /app
+ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=3000 HOSTNAME=0.0.0.0
+COPY standalone ./
+COPY static ./.next/static
+COPY public ./public
+USER node
+EXPOSE 3000
+CMD ["node", "server.js"]

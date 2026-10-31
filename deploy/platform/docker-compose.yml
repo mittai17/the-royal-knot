@@ -81,7 +81,10 @@ configs:
           { "name": "wedding_planner", "description": "Wedding Planner (app role PLANNER)" },
           { "name": "event_manager", "description": "Event Manager (app role EVENT_MANAGER)" },
           { "name": "finance_manager", "description": "Finance Manager (app role FINANCE)" },
-          { "name": "operations_staff", "description": "Operations Staff (app role OPERATIONS)" }
+          { "name": "operations_staff", "description": "Operations Staff (app role OPERATIONS)" },
+          { "name": "client", "description": "Couple / Client portal (app role CLIENT)" },
+          { "name": "vendor", "description": "Vendor portal (app role VENDOR)" },
+          { "name": "system_admin", "description": "System Administrator (app role SYSADMIN)" }
         ] },
         "clients": [ {
           "clientId": "royalknot-web",

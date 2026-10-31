@@ -1,0 +1,38 @@
+# Service "royalknot-tools": gotenberg (PDF) + mailpit (SMTP + inbox UI).
+name: royalknot-tools
+
+services:
+  gotenberg:
+    image: gotenberg/gotenberg:8
+    restart: unless-stopped
+    command: ["gotenberg", "--api-timeout=30s"]
+    shm_size: "256mb"
+    expose: ["3000"]
+    networks:
+      royalknot-internal: { aliases: [gotenberg, rk-gotenberg] }
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:3000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+
+  mailpit:
+    image: axllent/mailpit:latest
+    restart: unless-stopped
+    environment:
+      MP_UI_AUTH: ${MAILPIT_UI_AUTH:-admin:RoyalKnot@2026}
+    expose: ["1025", "8025"]
+    networks:
+      royalknot-internal: { aliases: [mailpit, rk-mailpit] }
+      dokploy-network:
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+networks:
+  royalknot-internal:
+    external: true
+  dokploy-network:
+    external: true

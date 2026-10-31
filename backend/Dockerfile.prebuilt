@@ -1,0 +1,20 @@
+# Prebuilt backend image: NO network work. The build context is the staging dir produced by
+# deploy/scripts/build-images.sh (dist/, node_modules/, prisma/, package.json, tsconfig*.json,
+# docker-entrypoint.sh). node_modules already contains the musl Prisma engines
+# (linux-musl-openssl-3.0.x) so the image runs on alpine. Only `apk add` needs the alpine mirror;
+# if that is slow, build with --build-arg BASE=<an image that already has openssl+curl>.
+ARG BASE=node:22-alpine
+FROM ${BASE}
+WORKDIR /app
+ENV NODE_ENV=production
+# openssl: Prisma engine. curl: container healthcheck. (skipped when already present)
+RUN apk info -e openssl curl >/dev/null 2>&1 || apk add --no-cache openssl curl
+COPY node_modules ./node_modules
+COPY dist ./dist
+COPY prisma ./prisma
+COPY package.json ./
+COPY tsconfig*.json ./
+COPY docker-entrypoint.sh ./
+RUN chmod +x docker-entrypoint.sh
+EXPOSE 4000
+ENTRYPOINT ["./docker-entrypoint.sh"]

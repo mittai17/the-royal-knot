@@ -15,6 +15,9 @@ const ROLE_MAP: [string, Role][] = [
   ['EVENT_MANAGER', Role.EVENT_MANAGER],
   ['WEDDING_PLANNER', Role.PLANNER],
   ['OPS_STAFF', Role.OPERATIONS], ['OPERATIONS_STAFF', Role.OPERATIONS], // second names = legacy realm role names
+  ['SYSTEM_ADMIN', Role.SYSADMIN], ['SYSADMIN', Role.SYSADMIN],
+  ['VENDOR', Role.VENDOR], ['VENDOR_USER', Role.VENDOR],
+  ['CLIENT', Role.CLIENT], ['COUPLE', Role.CLIENT], ['CLIENT_USER', Role.CLIENT],
 ];
 
 export function mapKeycloakRoles(roles: string[] | undefined): Role | null {
@@ -114,6 +117,6 @@ export class KeycloakService {
 
   async authenticate(token: string): Promise<AuthUser> {
     const u = await this.upsertFromClaims(await this.verify(token));
-    return { id: u.id, email: u.email, name: u.name, role: u.role, mustChangePassword: false };
+    return { id: u.id, email: u.email, name: u.name, role: u.role, mustChangePassword: false, vendorId: u.vendorId, coupleId: u.coupleId };
   }
 }

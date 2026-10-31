@@ -19,7 +19,7 @@ export function SearchInput({ value, onChange, placeholder = 'Search…' }: { va
 /** Tabs rendered as a pill group; used for stage filters and view switchers. */
 export function Segmented<T extends string>({ value, onChange, options }: { value: T; onChange: (v: T) => void; options: readonly { v: T; l: string }[] }) {
   return (
-    <div className="inline-flex rounded-lg bg-surface-2 p-1" role="tablist">
+    <div className="inline-flex max-w-full overflow-x-auto rounded-lg bg-surface-2 p-1" role="tablist">
       {options.map((o) => (
         <button key={o.v} role="tab" aria-selected={value === o.v} onClick={() => onChange(o.v)}
           className={`px-3 h-8 rounded-md text-xs font-medium transition-colors ${value === o.v ? 'bg-white text-burgundy shadow-card' : 'text-ink-soft hover:text-ink'}`}>{o.l}</button>

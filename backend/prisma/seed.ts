@@ -15,6 +15,7 @@ import * as argon2 from 'argon2';
 import { deflateSync, crc32 } from 'zlib';
 import { AppModule } from '../src/app.module';
 import { AuthUser } from '../src/common/decorators';
+import { expandMatrix } from '../src/common/permissions';
 import { computeQuotation } from '../src/common/finance';
 import { syncMilestones } from '../src/common/milestones';
 import { DEFAULT_TEMPLATES } from '../src/modules/tasks/default-templates';
@@ -132,24 +133,36 @@ const OTHERS: Cfg[] = [
 const SHARE: Partial<Record<VendorCategory, number>> = { VENUE: 0.24, CATERING: 0.22, DECORATION: 0.2, PHOTOGRAPHY: 0.06, MAKEUP: 0.03, ENTERTAINMENT: 0.06, LIGHTING: 0.07, TRANSPORTATION: 0.06, ACCOMMODATION: 0.06 };
 
 /** Demo users that mirror the Keycloak realm import (fixed ids). Upserted by email, so safe to run any number of times. */
-const KEYCLOAK_USERS: { id: string; email: string; name: string; role: Role; phone: string }[] = [
+const KEYCLOAK_USERS: { id: string; email: string; name: string; role: Role; phone: string; link?: 'mehta-couple' | 'royal-caterers' }[] = [
   { id: '11111111-1111-1111-1111-111111111111', email: 'arjun@royalknot.in', name: 'Arjun Rao', role: 'ADMIN', phone: '+91 98290 00101' },
   { id: '22222222-2222-2222-2222-222222222222', email: 'priya@royalknot.in', name: 'Priya Nair', role: 'PLANNER', phone: '+91 98290 00102' },
   { id: '33333333-3333-3333-3333-333333333333', email: 'kabir@royalknot.in', name: 'Kabir Sethi', role: 'EVENT_MANAGER', phone: '+91 98290 00103' },
   { id: '44444444-4444-4444-4444-444444444444', email: 'meera@royalknot.in', name: 'Meera Shah', role: 'FINANCE', phone: '+91 98290 00104' },
   { id: '55555555-5555-5555-5555-555555555555', email: 'rohan@royalknot.in', name: 'Rohan Das', role: 'OPERATIONS', phone: '+91 98290 00105' },
+  { id: '66666666-6666-6666-6666-666666666666', email: 'rahul.priya@gmail.com', name: 'Rahul & Priya Mehta', role: 'CLIENT', phone: '+91 98110 55501', link: 'mehta-couple' },
+  { id: '77777777-7777-7777-7777-777777777777', email: 'vendor@royalcaterers.com', name: 'Harish Agarwal', role: 'VENDOR', phone: '+91 98290 11001', link: 'royal-caterers' },
+  { id: '88888888-8888-8888-8888-888888888888', email: 'admin@royalknot.in', name: 'System Admin', role: 'SYSADMIN', phone: '+91 98290 00106' },
 ];
 
 async function upsertKeycloakUsers() {
   const passwordHash = await argon2.hash(PASSWORD);
-  for (const u of KEYCLOAK_USERS) {
+  const mehtaCouple = await prisma.wedding.findFirst({ where: { name: 'Mehta Wedding' }, select: { coupleId: true } });
+  const royal = await prisma.vendor.findFirst({ where: { name: 'Royal Caterers' }, select: { id: true } });
+  for (const { link, ...u } of KEYCLOAK_USERS) {
+    const scope = { coupleId: link === 'mehta-couple' ? mehtaCouple?.coupleId ?? null : null, vendorId: link === 'royal-caterers' ? royal?.id ?? null : null };
     await prisma.user.upsert({
       where: { email: u.email },
-      update: { name: u.name, role: u.role, phone: u.phone, status: 'ACTIVE' },
-      create: { ...u, passwordHash, mustChangePassword: false },
+      update: { name: u.name, role: u.role, phone: u.phone, status: 'ACTIVE', ...scope },
+      create: { ...u, ...scope, passwordHash, mustChangePassword: false },
     });
   }
   console.log(`Keycloak demo users upserted: ${KEYCLOAK_USERS.map((u) => u.email).join(', ')}`);
+}
+
+/** DB-backed permission matrix, seeded from common/permissions.ts. Existing rows are left alone so admin edits survive re-seeds. */
+async function seedRolePermissions() {
+  const r = await prisma.rolePermission.createMany({ data: expandMatrix(), skipDuplicates: true });
+  console.log(`RolePermission rows added: ${r.count}`);
 }
 
 async function wipe() {
@@ -164,6 +177,7 @@ async function main() {
   if ((existingWeddings > 0 || existingUsers > 0) && process.env.SEED_FORCE !== 'true') {
     console.log(`Database already has data (${existingWeddings} weddings, ${existingUsers} users) — skipping destructive seed. Ensuring Keycloak demo users are upserted.`);
     await upsertKeycloakUsers();
+    await seedRolePermissions();
     return;
   }
   await wipe();
@@ -538,6 +552,7 @@ async function main() {
 
   await app.close();
   await upsertKeycloakUsers();
+  await seedRolePermissions();
 
   const counts = { users: await prisma.user.count(), weddings: await prisma.wedding.count(), vendors: await prisma.vendor.count(), tasks: await prisma.weddingTask.count(), mehtaTasks: await prisma.weddingTask.count({ where: { weddingId: WID } }), guests: await prisma.guest.count(), enquiries: await prisma.enquiry.count(), quotations: await prisma.quotation.count(), payments: await prisma.clientPayment.count(), expenses: await prisma.expense.count(), notifications: await prisma.notification.count(), activity: await prisma.activityLog.count(), documents: await prisma.document.count() };
   console.log('Seed complete:', counts);

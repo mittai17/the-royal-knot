@@ -5,7 +5,7 @@ import { PrismaService } from '../../database/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { CreateUserDto, UpdateUserDto } from './users.dto';
 
-const SAFE = { id: true, email: true, name: true, phone: true, role: true, status: true, available: true, monthlyCost: true, lastLoginAt: true, createdAt: true, mustChangePassword: true } satisfies Prisma.UserSelect;
+const SAFE = { id: true, email: true, name: true, phone: true, role: true, status: true, available: true, monthlyCost: true, lastLoginAt: true, createdAt: true, mustChangePassword: true, vendorId: true, coupleId: true } satisfies Prisma.UserSelect;
 
 @Injectable()
 export class UsersService {
@@ -17,7 +17,7 @@ export class UsersService {
 
   async create(dto: CreateUserDto, actorId: string) {
     if (await this.prisma.user.findUnique({ where: { email: dto.email.toLowerCase() } })) throw new ConflictException('Email already registered');
-    const u = await this.prisma.user.create({ data: { email: dto.email.toLowerCase(), name: dto.name, phone: dto.phone, role: dto.role, monthlyCost: dto.monthlyCost ?? 0, passwordHash: await argon2.hash(dto.password), mustChangePassword: true }, select: SAFE });
+    const u = await this.prisma.user.create({ data: { email: dto.email.toLowerCase(), name: dto.name, phone: dto.phone, role: dto.role, monthlyCost: dto.monthlyCost ?? 0, vendorId: dto.role === Role.VENDOR ? dto.vendorId : undefined, coupleId: dto.role === Role.CLIENT ? dto.coupleId : undefined, passwordHash: await argon2.hash(dto.password), mustChangePassword: true }, select: SAFE });
     await this.audit.log({ actorId, entity: 'User', entityId: u.id, action: 'create', message: `Created ${u.role} account for ${u.name}` });
     return u;
   }
@@ -32,7 +32,7 @@ export class UsersService {
 
   /** Team workload: assigned weddings, completed/open/overdue tasks. */
   async workload() {
-    const users = await this.prisma.user.findMany({ where: { status: UserStatus.ACTIVE }, select: SAFE, orderBy: { name: 'asc' } });
+    const users = await this.prisma.user.findMany({ where: { status: UserStatus.ACTIVE, role: { notIn: [Role.CLIENT, Role.VENDOR, Role.SYSADMIN] } }, select: SAFE, orderBy: { name: 'asc' } });
     const now = new Date();
     const [weddings, tasks] = await Promise.all([
       this.prisma.wedding.groupBy({ by: ['plannerId'], where: { status: { not: 'CANCELLED' } }, _count: true }),

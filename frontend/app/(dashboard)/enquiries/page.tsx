@@ -61,7 +61,7 @@ function EnquiriesInner() {
   const [stage, setStage] = useState('');
   const [source, setSource] = useState('');
   const [creating, setCreating] = useState(params.get('new') === '1');
-  const [openId, setOpenId] = useState<string | null>(null);
+  const [openId, setOpenId] = useState<string | null>(params.get('open'));
   const list = useList<Enquiry>('/enquiries', { stage: stage || undefined, source: source || undefined }, view === 'board' ? 100 : 12);
 
   const move = async (id: string, to: string) => {

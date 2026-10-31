@@ -6,6 +6,7 @@ import { orderBy, Paginated, skipTake } from '../../common/pagination';
 import { inr } from '../../common/pdf-templates';
 import { vendorBill } from '../../common/vendor-bill';
 import { PrismaService } from '../../database/prisma.service';
+import { ApprovalsService } from '../approvals/approvals.service';
 import { AuditService } from '../audit/audit.service';
 import { CreateExpenseDto, DecideExpenseDto, ExpenseQuery, SetBudgetDto, UpdateExpenseDto } from './expenses.dto';
 
@@ -13,7 +14,7 @@ const include = { wedding: { select: { id: true, name: true } }, vendor: { selec
 
 @Injectable()
 export class ExpensesService {
-  constructor(private prisma: PrismaService, private audit: AuditService) {}
+  constructor(private prisma: PrismaService, private audit: AuditService, private approvals: ApprovalsService) {}
 
   async list(q: ExpenseQuery) {
     const where: Prisma.ExpenseWhereInput = { ...(q.weddingId ? { weddingId: q.weddingId } : {}), ...(q.status ? { status: q.status } : {}), ...(q.category ? { category: q.category } : {}), ...(q.vendorId ? { vendorId: q.vendorId } : {}), ...(q.search ? { description: { contains: q.search, mode: 'insensitive' } } : {}) };
@@ -30,6 +31,11 @@ export class ExpensesService {
   async create(dto: CreateExpenseDto, actor: AuthUser) {
     const e = await this.prisma.expense.create({ data: { ...dto, date: new Date(dto.date), responsibleId: dto.responsibleId ?? actor.id }, include });
     await this.audit.log({ actorId: actor.id, weddingId: e.weddingId, entity: 'Expense', entityId: e.id, action: 'create', message: `Logged expense ${inr(e.amount)} — ${e.description}` });
+    // Large extra expenses also show up in the Approvals Centre (the Expenses screen decision stays authoritative and is kept in sync).
+    const limit = Number(process.env.EXPENSE_APPROVAL_LIMIT ?? 25000);
+    if (e.status === 'PENDING' && Number(e.amount) >= limit) {
+      await this.approvals.requestFor({ type: 'EXTRA_EXPENSE', title: `Expense: ${e.description}`, description: `${e.category} · logged by ${actor.name}`, amount: e.amount, weddingId: e.weddingId, entity: 'Expense', entityId: e.id }, actor).catch(() => undefined);
+    }
     return e;
   }
 
@@ -45,6 +51,7 @@ export class ExpensesService {
   async decide(id: string, dto: DecideExpenseDto, actor: AuthUser) {
     if (dto.status === 'PENDING') throw new BadRequestException('Decision must be APPROVED or REJECTED');
     const e = await this.prisma.expense.update({ where: { id }, data: { status: dto.status }, include }).catch(() => { throw new NotFoundException('Expense not found'); });
+    await this.approvals.syncDecision('Expense', id, dto.status as 'APPROVED' | 'REJECTED', actor.id).catch(() => undefined);
     await this.audit.log({ actorId: actor.id, weddingId: e.weddingId, entity: 'Expense', entityId: id, action: dto.status.toLowerCase(), message: `${dto.status === 'APPROVED' ? 'Approved' : 'Rejected'} expense ${inr(e.amount)} — ${e.description}` });
     return e;
   }

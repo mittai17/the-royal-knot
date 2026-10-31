@@ -1,0 +1,39 @@
+# Service "royalknot-identity": Keycloak 26 (realm royalknot baked into the image, imported on first start).
+# Needs royalknot-keycloak:local and a running royalknot-data (postgres alias on royalknot-internal).
+name: royalknot-identity
+
+services:
+  keycloak:
+    image: royalknot-keycloak:${IMAGE_TAG:-local}
+    restart: unless-stopped
+    command: ["start", "--import-realm", "--optimized"]
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: ${POSTGRES_USER:-royalknot}
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:-kcadmin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?set KEYCLOAK_ADMIN_PASSWORD}
+      KC_API_CLIENT_SECRET: ${KC_API_CLIENT_SECRET:-royalknot_api_secret_2026}
+      KC_HOSTNAME: ${KEYCLOAK_PUBLIC_URL:-http://auth.royalknot.localhost}
+      KC_HOSTNAME_STRICT: "false"
+      KC_HTTP_ENABLED: "true"
+      KC_PROXY_HEADERS: xforwarded
+      KC_HEALTH_ENABLED: "true"
+      JAVA_OPTS_APPEND: "-Xms256m -Xmx512m -XX:MetaspaceSize=96M -XX:MaxMetaspaceSize=256m"
+    expose: ["8080"]
+    networks:
+      royalknot-internal: { aliases: [keycloak, rk-keycloak] }
+      dokploy-network:
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q '\"status\": \"UP\"' <&3"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 90s
+
+networks:
+  royalknot-internal:
+    external: true
+  dokploy-network:
+    external: true

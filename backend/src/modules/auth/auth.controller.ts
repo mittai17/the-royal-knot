@@ -3,7 +3,7 @@ import { ApiCookieAuth, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
 import { env } from '../../config/env';
-import { AuthUser, CurrentUser, Public } from '../../common/decorators';
+import { AllowExternal, AuthUser, CurrentUser, Public } from '../../common/decorators';
 import { ACCESS_TTL_S, AuthService, REFRESH_TTL_DAYS } from './auth.service';
 import { ChangePasswordDto, KeycloakLoginDto, LoginDto } from './auth.dto';
 import { KeycloakService } from './keycloak.service';
@@ -55,9 +55,9 @@ export class AuthController {
     return { ok: true };
   }
 
-  @Get('me') @ApiCookieAuth() me(@CurrentUser() u: AuthUser) { return { user: u }; }
+  @Get('me') @AllowExternal() @ApiCookieAuth() me(@CurrentUser() u: AuthUser) { return { user: u }; }
 
-  @Post('change-password') @HttpCode(200) @ApiCookieAuth() @Throttle({ default: { limit: () => env.authRateLimit, ttl: 60_000 } })
+  @Post('change-password') @AllowExternal() @HttpCode(200) @ApiCookieAuth() @Throttle({ default: { limit: () => env.authRateLimit, ttl: 60_000 } })
   async change(@CurrentUser() u: AuthUser, @Body() dto: ChangePasswordDto, @Res({ passthrough: true }) res: Response) {
     const r = await this.auth.changePassword(u.id, dto.currentPassword, dto.newPassword);
     this.setCookies(res, r.access, r.refresh);

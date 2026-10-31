@@ -1,0 +1,84 @@
+# Service "royalknot-data": postgres + redis + minio + minio-init.   Raw compose (paste), no domains.
+# Needs images from deploy/scripts/build-images.sh (royalknot-postgres/minio/mc:local) and the external
+# network:  docker network create royalknot-internal
+name: royalknot-data
+
+services:
+  postgres:
+    image: royalknot-postgres:${IMAGE_TAG:-local}   # postgres:16-alpine + init-databases (royalknot, keycloak, hyperswitch)
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-royalknot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: royalknot
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    expose: ["5432"]
+    networks:
+      royalknot-internal: { aliases: [postgres, rk-postgres] }
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-royalknot} -d royalknot"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis_data:/data
+    expose: ["6379"]
+    networks:
+      royalknot-internal: { aliases: [redis, rk-redis] }
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  minio:
+    image: royalknot-minio:${IMAGE_TAG:-local}
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-royalknot}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}
+    volumes:
+      - minio_data:/data
+    expose: ["9000", "9001"]
+    networks:
+      royalknot-internal: { aliases: [minio, rk-minio] }
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  minio-init:
+    image: royalknot-mc:${IMAGE_TAG:-local}
+    restart: "no"
+    depends_on:
+      minio: { condition: service_healthy }
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-royalknot}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET:-royalknot-documents}
+    command:
+      - -c
+      - |
+        until mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"; do sleep 2; done
+        mc mb --ignore-existing "local/$$MINIO_BUCKET"
+        mc anonymous set none "local/$$MINIO_BUCKET"
+        echo "bucket $$MINIO_BUCKET ready"
+    networks:
+      - royalknot-internal
+
+networks:
+  royalknot-internal:
+    external: true
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:

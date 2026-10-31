@@ -59,7 +59,7 @@ const STATUS_TONE: Record<string, string> = {
   COMPLETED: 'success', PAID: 'success', ARRIVED: 'success', CONFIRMED: 'success', ACCEPTED: 'success', APPROVED: 'success', RESOLVED: 'success', SIGNED: 'success', SETTLED: 'success', ACTIVE: 'success', CHECKED_IN: 'success', RECEIVED: 'success', CLOSED: 'success',
   IN_PROGRESS: 'info', CONTACTED: 'info', DUE: 'warning', UPCOMING: 'neutral', SCHEDULED: 'neutral', SENT: 'info', OPEN: 'info', PROPOSAL_SENT: 'info', CONSULTATION_SCHEDULED: 'info', UNDER_REVIEW: 'info',
   PARTIALLY_PAID: 'warning', WAITING_FOR_VENDOR: 'warning', NEGOTIATION: 'warning', PENDING: 'warning', DELAYED: 'warning', PLANNING: 'gold', REQUESTED: 'warning', INVESTIGATING: 'warning',
-  OVERDUE: 'danger', BLOCKED: 'danger', LOST: 'danger', CANCELLED: 'danger', REJECTED: 'danger', NOT_SELECTED: 'neutral', CRITICAL: 'danger', HIGH: 'danger', MEDIUM: 'warning', LOW: 'neutral', NEW: 'burgundy', TO_PLAN: 'neutral', NOT_ARRIVED: 'neutral', DECLINED: 'danger',
+  IN_REVIEW: 'info', VERIFIED: 'info', FULFILLED: 'success', VOID: 'danger', OVERDUE: 'danger', BLOCKED: 'danger', LOST: 'danger', CANCELLED: 'danger', REJECTED: 'danger', NOT_SELECTED: 'neutral', CRITICAL: 'danger', HIGH: 'danger', MEDIUM: 'warning', LOW: 'neutral', NEW: 'burgundy', TO_PLAN: 'neutral', NOT_ARRIVED: 'neutral', DECLINED: 'danger',
 };
 export function StatusBadge({ status, tone }: { status?: string | null; tone?: keyof typeof TONES }) {
   const key = (status ?? '').toUpperCase().replace(/[\s-]+/g, '_');
@@ -87,7 +87,7 @@ export function Card({ title, action, children, className, pad = true }: { title
     <section className={cn('card min-w-0', className)}>
       {(title || action) && (
         <header className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-5 pt-4 pb-3">
-          <h2 className="font-serif text-lg text-burgundy-deep min-w-0">{title}</h2><div className="shrink-0">{action}</div>
+          <h2 className="font-serif text-lg text-burgundy-deep min-w-0">{title}</h2><div className="max-w-full">{action}</div>
         </header>
       )}
       <div className={pad ? 'px-5 pb-5' : ''}>{children}</div>

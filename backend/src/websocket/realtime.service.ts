@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { Server } from 'socket.io';
 
-export type LiveEvent = 'vendor.arrival' | 'timeline.updated' | 'incident.created' | 'incident.updated' | 'task.updated' | 'guests.updated' | 'event.status' | 'notification';
+export type LiveEvent = 'vendor.arrival' | 'timeline.updated' | 'incident.created' | 'incident.updated' | 'task.updated' | 'guests.updated' | 'event.status' | 'notification' | 'message.new' | 'announcement.new' | 'feedback.updated' | 'function.updated' | 'accommodation.updated' | 'transport.updated' | 'checklist.updated';
 
 /** Thin broadcaster. Callers MUST persist to PostgreSQL first; this only pushes the already-saved state. */
 @Injectable()

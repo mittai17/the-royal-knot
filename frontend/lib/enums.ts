@@ -16,4 +16,4 @@ export const INCIDENT_STATUSES = ['OPEN', 'IN_PROGRESS', 'RESOLVED'] as const;
 export const DOC_CATEGORIES = ['AGREEMENT', 'VENDOR_QUOTATION', 'VENDOR_CONTRACT', 'FLOOR_PLAN', 'EVENT_SCHEDULE', 'INVOICE', 'RECEIPT', 'FINAL_REPORT', 'PHOTO', 'EVIDENCE', 'OTHER'] as const;
 export const EVENT_KINDS = ['MEHENDI', 'SANGEET', 'CEREMONY', 'RECEPTION', 'HALDI', 'OTHER'] as const;
 export const CHARGE_TYPES = ['EXTRA_GUESTS', 'DECORATION', 'DJ_OVERTIME', 'EQUIPMENT', 'TRANSPORTATION', 'OTHER'] as const;
-export const ROLES = [{ v: 'ADMIN', l: 'Founder / Administrator' }, { v: 'PLANNER', l: 'Wedding Planner' }, { v: 'EVENT_MANAGER', l: 'Event Manager' }, { v: 'FINANCE', l: 'Finance Manager' }, { v: 'OPERATIONS', l: 'Operations Staff' }] as const;
+export const ROLES = [{ v: 'ADMIN', l: 'Founder / Administrator' }, { v: 'PLANNER', l: 'Wedding Planner' }, { v: 'EVENT_MANAGER', l: 'Event Manager' }, { v: 'FINANCE', l: 'Finance Manager' }, { v: 'OPERATIONS', l: 'Operations Staff' }, { v: 'CLIENT', l: 'Couple / Client' }, { v: 'VENDOR', l: 'Vendor' }, { v: 'SYSADMIN', l: 'System Administrator' }] as const;

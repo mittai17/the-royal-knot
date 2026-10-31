@@ -8,6 +8,8 @@ export class CreateUserDto {
   @IsOptional() @IsString() phone?: string;
   @IsEnum(Role) role: Role;
   @IsString() @MinLength(10) password: string;
+  @IsOptional() @IsUUID() vendorId?: string;
+  @IsOptional() @IsUUID() coupleId?: string;
   @IsOptional() @IsNumber() monthlyCost?: number;
 }
 

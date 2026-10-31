@@ -63,6 +63,9 @@ Production build: `npm run build` (also compiles the seed into `dist/_seed`), th
 | kabir@royalknot.in | `EVENT_MANAGER` | Event Manager | `33333333-…` |
 | meera@royalknot.in | `FINANCE_MANAGER` | Finance | `44444444-…` |
 | rohan@royalknot.in | `OPS_STAFF` | Operations | `55555555-…` |
+| rahul.priya@gmail.com | `CLIENT` | Client (Mehta wedding) | `66666666-…` |
+| vendor@royalcaterers.com | `VENDOR` | Vendor (Royal Caterers) | `77777777-…` |
+| admin@royalknot.in | `SYSTEM_ADMIN` | System Administrator | `88888888-…` |
 
 These also work with the built-in `/auth/login`.
 

@@ -9,6 +9,9 @@ import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configure } from '../src/main';
 
+// The app enables the Keycloak integration by default; this suite asserts the built-in-auth-only behaviour, so keep it hermetic.
+if (process.env.KEYCLOAK_ENABLED !== 'true') process.env.KEYCLOAK_ENABLED = 'false';
+
 const PASSWORD = process.env.DEMO_PASSWORD ?? 'RoyalKnot@2026';
 const prisma = new PrismaClient();
 const RUN = `E2E-${Date.now()}`;
@@ -593,14 +596,15 @@ describe('16. keycloak integration, system status, UPI link', () => {
   });
   it('system status lists every service with latency', async () => {
     const s = d(await request(url).get('/api/v1/system/status').expect(200));
-    expect(Object.keys(s.services).sort()).toEqual(['database', 'gotenberg', 'keycloak', 'minio', 'redis']);
-    expect(s.services.database.status).toBe('up');
-    expect(typeof s.services.database.latencyMs).toBe('number');
-    expect(s.services.keycloak).toEqual({ status: 'disabled', latencyMs: null });
+    expect(s.services.map((x: any) => x.name).sort()).toEqual(['database', 'gotenberg', 'keycloak', 'minio', 'redis']);
+    expect(Object.keys(s.checks).sort()).toEqual(['database', 'gotenberg', 'keycloak', 'minio', 'redis']);
+    expect(s.checks.database.status).toBe('up');
+    expect(typeof s.checks.database.latencyMs).toBe('number');
+    expect(s.checks.keycloak).toEqual({ status: 'disabled', latencyMs: null });
   });
   it('seeded Keycloak demo users exist with their fixed ids and roles', async () => {
     const u = await prisma.user.findMany({ where: { email: { endsWith: '@royalknot.in' } }, orderBy: { id: 'asc' } });
-    expect(u.map((x) => [x.id[0], x.email.split('@')[0], x.role])).toEqual([['1', 'arjun', 'ADMIN'], ['2', 'priya', 'PLANNER'], ['3', 'kabir', 'EVENT_MANAGER'], ['4', 'meera', 'FINANCE'], ['5', 'rohan', 'OPERATIONS']]);
+    expect(u.map((x) => [x.id[0], x.email.split('@')[0], x.role])).toEqual([['1', 'arjun', 'ADMIN'], ['2', 'priya', 'PLANNER'], ['3', 'kabir', 'EVENT_MANAGER'], ['4', 'meera', 'FINANCE'], ['5', 'rohan', 'OPERATIONS'], ['8', 'admin', 'SYSADMIN']]);
   });
   it('builds a UPI deep link for an unpaid milestone, restricted to finance-read roles', async () => {
     const list = d(await agents.meera.get('/api/v1/payments/milestones?pageSize=100'));

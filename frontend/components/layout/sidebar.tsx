@@ -2,7 +2,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { PanelLeftClose, PanelLeftOpen, LogOut } from 'lucide-react';
-import { NAV } from '@/lib/nav';
+import { navFor } from '@/lib/nav';
 import { cn } from '@/lib/utils';
 import { LotusMark } from './logo';
 import { Avatar } from '@/components/ui/primitives';
@@ -12,7 +12,7 @@ interface Props { collapsed: boolean; onToggle: () => void; mobileOpen: boolean;
 
 export function Sidebar({ collapsed, onToggle, mobileOpen, onCloseMobile, counts }: Props) {
   const path = usePathname();
-  const { user, logout, can } = useAuth();
+  const { user, logout } = useAuth();
   const narrow = collapsed && !mobileOpen;
 
   return (
@@ -37,7 +37,7 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onCloseMobile, counts
         </div>
 
         <nav className="flex-1 overflow-y-auto px-3 py-1 space-y-0.5">
-          {NAV.filter((n) => !n.roles || can(...n.roles)).map(({ href, label, icon: Icon, countKey }) => {
+          {navFor(user?.role).map(({ href, label, icon: Icon, countKey }) => {
             const active = path === href || path.startsWith(href + '/');
             const count = countKey ? counts[countKey] : undefined;
             return (

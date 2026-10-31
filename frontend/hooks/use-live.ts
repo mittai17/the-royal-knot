@@ -3,7 +3,7 @@ import { useEffect, useRef } from 'react';
 import { io, type Socket } from 'socket.io-client';
 import { config } from '@/lib/config';
 
-export type LiveEvent = 'vendor.arrival' | 'timeline.updated' | 'incident.created' | 'incident.updated' | 'task.updated' | 'guests.updated' | 'event.status' | 'notification';
+export type LiveEvent = 'vendor.arrival' | 'timeline.updated' | 'incident.created' | 'incident.updated' | 'task.updated' | 'guests.updated' | 'event.status' | 'notification' | 'message.new' | 'announcement.new' | 'feedback.updated' | 'function.updated' | 'accommodation.updated' | 'transport.updated' | 'checklist.updated';
 
 /** Joins a wedding room on /live; calls onEvent for any live event and onSync after every (re)connect. */
 export function useLive(weddingId: string | null, onEvent: (e: LiveEvent, payload: unknown) => void, onSync?: () => void) {
@@ -14,7 +14,7 @@ export function useLive(weddingId: string | null, onEvent: (e: LiveEvent, payloa
   useEffect(() => {
     if (!weddingId) return;
     const socket: Socket = io(`${config.wsUrl}/live`, { withCredentials: true, reconnectionDelayMax: 5000 });
-    const events: LiveEvent[] = ['vendor.arrival', 'timeline.updated', 'incident.created', 'incident.updated', 'task.updated', 'guests.updated', 'event.status', 'notification'];
+    const events: LiveEvent[] = ['vendor.arrival', 'timeline.updated', 'incident.created', 'incident.updated', 'task.updated', 'guests.updated', 'event.status', 'notification', 'function.updated', 'accommodation.updated', 'transport.updated', 'checklist.updated'];
     events.forEach((ev) => socket.on(ev, (p: unknown) => cb.current(ev, p)));
     socket.on('connect', () => {
       connected.current = true;

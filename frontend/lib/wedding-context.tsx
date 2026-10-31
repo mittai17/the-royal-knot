@@ -1,6 +1,7 @@
 'use client';
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 import { api } from './api';
+import { useAuth } from './auth';
 import { asRows } from '@/hooks/use-api';
 import type { Wedding } from '@/types';
 
@@ -12,8 +13,13 @@ export function WeddingProvider({ children }: { children: ReactNode }) {
   const [weddings, setWeddings] = useState<Wedding[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const { user, loading: authLoading } = useAuth();
+  const role = user?.role;
 
   useEffect(() => {
+    if (authLoading) return;
+    // The system administrator has no access to wedding data; skip the (403) lookup.
+    if (!role || role === 'SYSADMIN') { setLoading(false); return; }
     api.get<unknown>('/weddings', { pageSize: 100 })
       .then((r) => {
         const rows = asRows<Wedding>(r.data);
@@ -25,7 +31,7 @@ export function WeddingProvider({ children }: { children: ReactNode }) {
       })
       .catch(() => undefined)
       .finally(() => setLoading(false));
-  }, []);
+  }, [authLoading, role]);
 
   const select = (id: string | null) => {
     setSelectedId(id);

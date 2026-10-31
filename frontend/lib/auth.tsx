@@ -33,4 +33,5 @@ export function useAuth(): AuthCtx {
 
 export const ROLE_LABEL: Record<Role, string> = {
   ADMIN: 'Founder / Administrator', PLANNER: 'Wedding Planner', EVENT_MANAGER: 'Event Manager', FINANCE: 'Finance Manager', OPERATIONS: 'Operations Staff',
+  CLIENT: 'Couple / Client', VENDOR: 'Vendor', SYSADMIN: 'System Administrator',
 };

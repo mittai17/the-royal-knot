@@ -3,7 +3,8 @@ import { decodeProtectedHeader } from 'jose';
 import { Reflector } from '@nestjs/core';
 import { AuthGuard } from '@nestjs/passport';
 import { Role } from '@prisma/client';
-import { IS_PUBLIC, ROLES_KEY } from './decorators';
+import { ALLOW_EXTERNAL, IS_PUBLIC, ROLES_KEY } from './decorators';
+import { LOCKED_ROLES } from './permissions';
 import { env } from '../config/env';
 import { KeycloakService } from '../modules/auth/keycloak.service';
 
@@ -33,10 +34,17 @@ export class RolesGuard implements CanActivate {
   constructor(private reflector: Reflector) {}
   canActivate(ctx: ExecutionContext): boolean {
     const roles = this.reflector.getAllAndOverride<Role[]>(ROLES_KEY, [ctx.getHandler(), ctx.getClass()]);
-    if (!roles || roles.length === 0) return true;
     const user = ctx.switchToHttp().getRequest().user;
     if (!user) return true; // public route
-    if (user.role === Role.ADMIN || roles.includes(user.role)) return true;
+    if (user.role === Role.ADMIN) return true;
+    if (!roles || roles.length === 0) {
+      // Default-deny for CLIENT / VENDOR / SYSADMIN: routes that do not name them (or opt in via @AllowExternal) stay staff-only.
+      if (LOCKED_ROLES.includes(user.role) && !this.reflector.getAllAndOverride<boolean>(ALLOW_EXTERNAL, [ctx.getHandler(), ctx.getClass()])) {
+        throw new ForbiddenException('Your role does not allow this action');
+      }
+      return true;
+    }
+    if (roles.includes(user.role)) return true;
     throw new ForbiddenException('Your role does not allow this action');
   }
 }

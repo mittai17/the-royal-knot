@@ -73,7 +73,7 @@ function GlobalSearch() {
   }, [q]);
 
   return (
-    <div className="relative flex-1 max-w-[460px]" ref={ref}>
+    <div className="relative flex-1 min-w-0 max-w-[460px]" ref={ref}>
       <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-ink-soft" />
       <input ref={inputRef} value={q} onChange={(e) => setQ(e.target.value)} onFocus={() => hits.length && setOpen(true)} placeholder="Search weddings, vendors, tasks, guests…" aria-label="Global search"
         className="w-full h-11 rounded-xl border border-line bg-white pl-10 pr-14 text-sm focus:outline-none focus:ring-2 focus:ring-gold/40 focus:border-burgundy" />
@@ -150,7 +150,7 @@ export function Topbar({ onMenu }: { onMenu: () => void }) {
           <MapPin className="h-4 w-4 text-burgundy" /> Jaipur · Udaipur
         </div>
 
-        <Menu_ width="w-80" trigger={(o) => (
+        {user?.role !== 'SYSADMIN' && <Menu_ width="w-80" trigger={(o) => (
           <button className="flex items-center gap-2 h-11 px-3 md:px-4 rounded-xl border border-line bg-white text-sm max-w-[240px]" aria-expanded={o} aria-label={`Select wedding, current: ${selected?.name ?? 'all weddings'}`}>
             <Heart className="h-4 w-4 text-burgundy shrink-0" /><span className="truncate hidden md:inline">{selected?.name ?? 'All weddings'}</span><ChevronDown className="h-4 w-4 text-ink-soft shrink-0 hidden md:block" />
           </button>
@@ -166,7 +166,7 @@ export function Topbar({ onMenu }: { onMenu: () => void }) {
               ))}
             </div>
           )}
-        </Menu_>
+        </Menu_>}
 
         <Menu_ width="w-[360px]" trigger={() => (
           <button className="relative h-11 w-11 rounded-xl border border-line bg-white grid place-items-center" aria-label={`Notifications${unread ? `, ${unread} unread` : ''}`}>

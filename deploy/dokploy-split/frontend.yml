@@ -1,0 +1,28 @@
+# Service "royalknot-frontend": Next.js standalone only. NEXT_PUBLIC_* and BACKEND_URL are baked into the
+# image by deploy/scripts/build-images.sh (not runtime env). /api and /socket.io are proxied to http://backend:4000.
+name: royalknot-frontend
+
+services:
+  frontend:
+    image: royalknot-frontend:${IMAGE_TAG:-local}
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+    expose: ["3000"]
+    networks:
+      royalknot-internal: { aliases: [frontend, rk-frontend] }
+      dokploy-network:
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+networks:
+  royalknot-internal:
+    external: true
+  dokploy-network:
+    external: true
