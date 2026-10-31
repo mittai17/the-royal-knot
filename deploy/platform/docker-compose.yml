@@ -1,0 +1,108 @@
+# Optional self-hosted identity + DB admin tooling for the `odoo` Dokploy project.
+# The Royal Knot app keeps its built-in auth; Keycloak is an optional IdP (realm `royalknot`).
+# Required env (set in Dokploy, never committed): KEYCLOAK_ADMIN_PASSWORD, KEYCLOAK_DB_PASSWORD
+services:
+  keycloak-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?set KEYCLOAK_DB_PASSWORD}
+      POSTGRES_DB: keycloak
+    volumes: [keycloak_pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak -d keycloak"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [platform]
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.4
+    restart: unless-stopped
+    command: ["start", "--import-realm"]
+    depends_on:
+      keycloak-db: { condition: service_healthy }
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://keycloak-db:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?set KEYCLOAK_DB_PASSWORD}
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:-kcadmin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?set KEYCLOAK_ADMIN_PASSWORD}
+      KC_HOSTNAME: ${KEYCLOAK_URL:-http://keycloak.localhost}
+      KC_HTTP_ENABLED: "true"        # TLS is terminated by Traefik
+      KC_PROXY_HEADERS: xforwarded
+      KC_HEALTH_ENABLED: "true"
+    configs:
+      - source: royalknot_realm
+        target: /opt/keycloak/data/import/royalknot-realm.json
+    healthcheck:
+      # keycloak image has no curl; probe the management port with bash
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q '\"status\": \"UP\"' <&3"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 90s
+    networks: [platform, dokploy-network]
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=dokploy-network
+      - traefik.http.routers.odoo-keycloak.rule=Host(`keycloak.localhost`)
+      - traefik.http.routers.odoo-keycloak.entrypoints=web
+      - traefik.http.services.odoo-keycloak.loadbalancer.server.port=8080
+
+  adminer:
+    image: adminer:latest
+    restart: unless-stopped
+    environment:
+      ADMINER_DEFAULT_SERVER: keycloak-db
+    # also joins the Royal Knot app's private network so the app DB is reachable as server `postgres`
+    networks: [platform, dokploy-network, royalknot-internal]
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=dokploy-network
+      - traefik.http.routers.odoo-adminer.rule=Host(`adminer.localhost`)
+      - traefik.http.routers.odoo-adminer.entrypoints=web
+      - traefik.http.services.odoo-adminer.loadbalancer.server.port=8080
+
+configs:
+  royalknot_realm:
+    content: |
+      {
+        "realm": "royalknot",
+        "enabled": true,
+        "displayName": "The Royal Knot",
+        "registrationAllowed": false,
+        "loginWithEmailAllowed": true,
+        "sslRequired": "none",
+        "roles": { "realm": [
+          { "name": "founder_admin", "description": "Founder / Administrator (app role ADMIN)" },
+          { "name": "wedding_planner", "description": "Wedding Planner (app role PLANNER)" },
+          { "name": "event_manager", "description": "Event Manager (app role EVENT_MANAGER)" },
+          { "name": "finance_manager", "description": "Finance Manager (app role FINANCE)" },
+          { "name": "operations_staff", "description": "Operations Staff (app role OPERATIONS)" }
+        ] },
+        "clients": [ {
+          "clientId": "royalknot-web",
+          "name": "The Royal Knot web app",
+          "enabled": true,
+          "publicClient": true,
+          "standardFlowEnabled": true,
+          "directAccessGrantsEnabled": false,
+          "redirectUris": ["http://royalknot.localhost/*", "http://localhost:3100/*"],
+          "webOrigins": ["http://royalknot.localhost", "http://localhost:3100"],
+          "attributes": { "pkce.code.challenge.method": "S256" }
+        } ]
+      }
+
+networks:
+  platform:
+  dokploy-network:
+    external: true
+  royalknot-internal:
+    external: true
+    name: ${ROYALKNOT_INTERNAL_NETWORK:-compose-hack-solid-state-protocol-qihf5p_internal}
+
+volumes:
+  keycloak_pgdata:

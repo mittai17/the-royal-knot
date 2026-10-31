@@ -90,3 +90,22 @@ run backend and frontend with npm. The production compose needs `docker network 
 
 **Not verified:** Git-sourced Dokploy deploy, HTTPS/Let's Encrypt, a deploy on a second machine, a truly air-gapped run
 (Dokploy's own images also need saving, see B), restore while users are active.
+
+---
+
+## Dokploy project `odoo` (verified on this host)
+
+Dokploy project **odoo** (environment `production`) contains two compose apps:
+
+| App | Source | Services | Routes (Traefik, http) |
+|---|---|---|---|
+| `royalknot` | `docker-compose.yml` / `deploy/docker-compose.images.yml` (raw) | frontend, backend, postgres, redis, minio, gotenberg, mailpit | `royalknot.localhost` (app), `minio.localhost` (MinIO console), `mail.localhost` (Mailpit UI, basic auth via `MAILPIT_UI_AUTH`) |
+| `platform` | `deploy/platform/docker-compose.yml` (raw) | keycloak, keycloak-db (dedicated Postgres 16), adminer | `keycloak.localhost`, `adminer.localhost` |
+
+Notes:
+- Postgres, Redis and the MinIO S3 API publish **no host ports**; only Traefik-routed UIs are reachable.
+- Keycloak 26.4 runs `start --import-realm` against its own database. The imported realm `royalknot` has realm roles `founder_admin`, `wedding_planner`, `event_manager`, `finance_manager`, `operations_staff` (mapping to the app roles ADMIN, PLANNER, EVENT_MANAGER, FINANCE, OPERATIONS) and a public PKCE client `royalknot-web`.
+- **Keycloak is optional.** The Royal Knot app keeps its built-in authentication (Argon2 + JWT cookies); it is not wired to Keycloak.
+- Adminer joins the `royalknot` internal network, so both `keycloak-db` and the app database (`postgres`) can be opened from it. Override the network name with `ROYALKNOT_INTERNAL_NETWORK` if the Dokploy app name changes.
+- Secrets (`KEYCLOAK_ADMIN_PASSWORD`, `KEYCLOAK_DB_PASSWORD`, `MAILPIT_UI_AUTH`) live only in Dokploy's environment for each app; the generated values are in `~/.odoo-stack-credentials` on the host (not in the repo). `*.localhost` resolves to 127.0.0.1 in browsers; on other machines add hosts entries or real DNS.
+- Checks run after deploy: all containers healthy; `keycloak.localhost/realms/royalknot` returns 200 and the roles/client exist; `adminer.localhost` 200; `minio.localhost` 200; `mail.localhost` 401 without credentials; `royalknot.localhost/login` 200.
