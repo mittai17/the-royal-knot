@@ -63,6 +63,20 @@ export class SystemController {
   @Get('status')
   async status() {
     const r = await this.health.collect();
-    return { ...r, version: process.env.npm_package_version ?? '1.0.0', uptimeSeconds: Math.round(process.uptime()), keycloakEnabled: env.keycloak.enabled };
+    const serviceList = Object.entries(r.services).map(([name, s]) => ({
+      name,
+      status: s.status,
+      latencyMs: s.latencyMs,
+      detail: s.latencyMs != null ? `${s.latencyMs}ms latency` : s.status === 'disabled' ? 'Disabled' : undefined,
+    }));
+    return {
+      status: r.status,
+      services: serviceList,
+      checks: r.services,
+      version: process.env.npm_package_version ?? '1.0.0',
+      uptimeSeconds: Math.round(process.uptime()),
+      keycloakEnabled: env.keycloak.enabled,
+      time: r.time,
+    };
   }
 }

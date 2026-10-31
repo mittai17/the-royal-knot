@@ -16,7 +16,7 @@
     "seed:dev": "ts-node prisma/seed.ts"
   },
   "prisma": {
-    "seed": "ts-node prisma/seed.ts"
+    "seed": "node prisma/run-seed.js"
   },
   "dependencies": {
     "@nestjs/bullmq": "11.0.5",

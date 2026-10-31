@@ -1,0 +1,21 @@
+# Local laptop testing: maps localhost ports to containers.
+# Automatically loaded by `docker compose up` on local machines.
+# In Dokploy production, Dokploy runs `docker compose -f docker-compose.yml up -d`
+# so this override file is safely ignored.
+services:
+  frontend:
+    ports: ["127.0.0.1:${FRONTEND_PORT:-3000}:3000"]
+  backend:
+    ports: ["127.0.0.1:${BACKEND_PORT:-4000}:4000"]
+  keycloak:
+    ports: ["127.0.0.1:${KEYCLOAK_PORT:-8080}:8080"]
+  hyperswitch:
+    ports: ["127.0.0.1:${HYPERSWITCH_PORT:-8081}:8080"]
+  mailpit:
+    ports: ["127.0.0.1:${MAILPIT_UI_PORT:-8025}:8025"]
+  minio:
+    ports: ["127.0.0.1:${MINIO_PORT:-9000}:9000", "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"]
+  postgres:
+    ports: ["127.0.0.1:${POSTGRES_PORT:-5432}:5432"]
+  redis:
+    ports: ["127.0.0.1:${REDIS_PORT:-6379}:6379"]

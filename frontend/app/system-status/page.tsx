@@ -34,7 +34,16 @@ export default function SystemStatusPage() {
     return () => clearInterval(t);
   }, [load]);
 
-  const services = status?.services ?? [];
+  const rawServices = status?.services;
+  const services: ServiceStatus[] = Array.isArray(rawServices)
+    ? rawServices
+    : rawServices && typeof rawServices === 'object'
+      ? Object.entries(rawServices).map(([name, s]: [string, any]) => ({
+          name,
+          status: s?.status ?? 'down',
+          detail: s?.detail ?? (s?.latencyMs != null ? `${s.latencyMs}ms` : undefined),
+        }))
+      : [];
   const down = services.filter((s) => s.status === 'down').length;
   const summary = error ? 'API unreachable' : !status ? 'Checking services…' : down ? `${down} service${down > 1 ? 's' : ''} down` : 'All systems operational';
 

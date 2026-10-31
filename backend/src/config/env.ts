@@ -28,9 +28,9 @@ export const env = {
     const realm = get('KEYCLOAK_REALM', 'royalknot');
     const internalIssuer = `${internalUrl}/realms/${realm}`;
     return {
-      enabled: get('KEYCLOAK_ENABLED', 'false') === 'true',
+      enabled: get('KEYCLOAK_ENABLED', 'true') === 'true',
       internalUrl, realm, internalIssuer,
-      publicIssuer: get('KEYCLOAK_PUBLIC_ISSUER', internalIssuer),
+      publicIssuer: first(['KEYCLOAK_PUBLIC_ISSUER', 'KEYCLOAK_ISSUER'], internalIssuer),
       clientId: get('KEYCLOAK_CLIENT_ID', 'royalknot-web'),
       clientSecret: get('KEYCLOAK_CLIENT_SECRET', ''),
       apiClientId: get('KEYCLOAK_API_CLIENT_ID', 'royalknot-api'),

@@ -159,9 +159,10 @@ async function wipe() {
 
 async function main() {
   console.log('Seeding The Royal Knot…');
-  const already = (await prisma.wedding.count()) >= 25 && !!(await prisma.wedding.findFirst({ where: { name: 'Mehta Wedding' } }));
-  if (already && process.env.SEED_FORCE !== 'true') {
-    console.log('Demo dataset already present — skipping (set SEED_FORCE=true to wipe and rebuild).');
+  const existingWeddings = await prisma.wedding.count();
+  const existingUsers = await prisma.user.count();
+  if ((existingWeddings > 0 || existingUsers > 0) && process.env.SEED_FORCE !== 'true') {
+    console.log(`Database already has data (${existingWeddings} weddings, ${existingUsers} users) — skipping destructive seed. Ensuring Keycloak demo users are upserted.`);
     await upsertKeycloakUsers();
     return;
   }

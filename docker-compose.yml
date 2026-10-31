@@ -1,89 +1,34 @@
-# Production stack — import into Dokploy as a "Docker Compose" application.
-# Secrets come from Dokploy's Environment tab (see .env.example); nothing here is a real credential.
-# Only `frontend` is routed publicly (Traefik via dokploy-network); the browser reaches the API
-# through the frontend's /api and /socket.io rewrites, so the backend needs no public domain.
+# The Royal Knot - Production Dokploy Compose Stack (Create Service -> Compose)
+#
+# Dokploy Architecture:
+# - Dual-network: public services attach to external `dokploy-network` (routed by Dokploy's Traefik proxy).
+#   All services attach to `royalknot-internal` for secure container-to-container communication.
+# - Zero host port conflicts: internal ports are declared with `expose:`. No raw `ports:` bind to the VPS.
+# - Memory protection: Keycloak JVM memory capped, Gotenberg shm_size 256mb, Redis noeviction 256mb.
 name: royalknot
 
 x-restart: &restart
   restart: unless-stopped
 
 services:
-  frontend:
-    <<: *restart
-    image: royalknot-frontend:local
-    build:
-      context: ./frontend
-      args:
-        BACKEND_URL: http://backend:4000
-    environment:
-      NODE_ENV: production
-      PORT: "3000"
-      HOSTNAME: 0.0.0.0
-    depends_on:
-      backend:
-        condition: service_healthy
-    networks: [internal, dokploy-network]
-    healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))"]
-      interval: 15s
-      timeout: 5s
-      retries: 6
-      start_period: 20s
-    labels:
-      - traefik.enable=true
-      - traefik.docker.network=dokploy-network
-      - traefik.http.routers.royalknot.rule=Host(`${APP_DOMAIN:-royalknot.localhost}`)
-      - traefik.http.routers.royalknot.entrypoints=${TRAEFIK_ENTRYPOINT:-web}
-      - traefik.http.services.royalknot.loadbalancer.server.port=3000
-
-  backend:
-    <<: *restart
-    image: royalknot-backend:local
-    build:
-      context: ./backend
-    environment:
-      NODE_ENV: production
-      PORT: "4000"
-      DATABASE_URL: postgresql://${POSTGRES_USER:-royalknot}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-royalknot}?schema=public
-      REDIS_URL: redis://redis:6379
-      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?set JWT_ACCESS_SECRET}
-      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?set JWT_REFRESH_SECRET}
-      COOKIE_SECURE: ${COOKIE_SECURE:-false}
-      CORS_ORIGIN: ${PUBLIC_URL:-http://royalknot.localhost}
-      MINIO_ENDPOINT: minio
-      MINIO_PORT: "9000"
-      MINIO_USE_SSL: "false"
-      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-royalknot}
-      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}
-      MINIO_BUCKET: ${MINIO_BUCKET:-royalknot}
-      GOTENBERG_URL: http://gotenberg:3000
-      SMTP_HOST: mailpit
-      SMTP_PORT: "1025"
-      MAIL_FROM: ${MAIL_FROM:-no-reply@royalknot.local}
-      SEED_ON_START: ${SEED_ON_START:-false}
-    depends_on:
-      postgres: { condition: service_healthy }
-      redis: { condition: service_healthy }
-      minio: { condition: service_healthy }
-    networks: [internal]
-    healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/api/v1/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
-      interval: 15s
-      timeout: 5s
-      retries: 10
-      start_period: 60s
-
   postgres:
     <<: *restart
     image: postgres:16-alpine
+    build: ./docker/postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-royalknot}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB:-royalknot}
-    volumes: [pgdata:/var/lib/postgresql/data]
-    networks: [internal]
+      POSTGRES_DB: royalknot
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init-databases.sh:/docker-entrypoint-initdb.d/01-init-databases.sh:ro
+      - ./docker/postgres/init-databases.sql:/docker-entrypoint-initdb.d/02-init-databases.sql:ro
+    expose: ["5432"]
+    networks:
+      royalknot-internal:
+        aliases: [postgres, rk-postgres]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-royalknot} -d royalknot"]
       interval: 5s
       timeout: 3s
       retries: 12
@@ -91,9 +36,13 @@ services:
   redis:
     <<: *restart
     image: redis:7-alpine
-    command: ["redis-server", "--appendonly", "yes"]
-    volumes: [redisdata:/data]
-    networks: [internal]
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis_data:/data
+    expose: ["6379"]
+    networks:
+      royalknot-internal:
+        aliases: [redis, rk-redis]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -102,20 +51,55 @@ services:
 
   minio:
     <<: *restart
-    # MinIO no longer publishes official images, so it is built from source (deploy/minio/Dockerfile).
+    image: royalknot-minio:${IMAGE_TAG:-local}
     build: ./deploy/minio
-    image: royalknot-minio:local
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-royalknot}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}
-    volumes: [miniodata:/data]
-    networks: [internal]
+    volumes:
+      - minio_data:/data
+    expose: ["9000", "9001"]
+    networks:
+      royalknot-internal:
+        aliases: [minio, rk-minio]
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  minio-init:
+    image: royalknot-mc:${IMAGE_TAG:-local}
+    build:
+      context: ./deploy/minio
+      dockerfile: Dockerfile.mc
+    restart: "no"
+    depends_on:
+      minio: { condition: service_healthy }
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-royalknot}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET:-royalknot-documents}
+    command:
+      - -c
+      - |
+        until mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"; do sleep 2; done
+        mc mb --ignore-existing "local/$$MINIO_BUCKET"
+        mc anonymous set none "local/$$MINIO_BUCKET"
+        echo "bucket $$MINIO_BUCKET ready"
+    networks:
+      - royalknot-internal
 
   gotenberg:
     <<: *restart
     image: gotenberg/gotenberg:8
-    networks: [internal]
+    command: ["gotenberg", "--api-timeout=30s"]
+    shm_size: "256mb"
+    expose: ["3000"]
+    networks:
+      royalknot-internal:
+        aliases: [gotenberg, rk-gotenberg]
     healthcheck:
       test: ["CMD", "curl", "-fs", "http://localhost:3000/health"]
       interval: 15s
@@ -125,16 +109,204 @@ services:
   mailpit:
     <<: *restart
     image: axllent/mailpit:latest
-    networks: [internal]
-    # Inbox UI (8025) is internal-only by default. To expose it, add a Traefik router in Dokploy's
-    # Domains tab pointing at mailpit:8025 behind authentication.
+    environment:
+      MP_UI_AUTH: ${MAILPIT_UI_AUTH:-admin:RoyalKnot@2026}
+    expose: ["1025", "8025"]
+    networks:
+      royalknot-internal:
+        aliases: [mailpit, rk-mailpit]
+      dokploy-network:
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+  keycloak:
+    <<: *restart
+    image: quay.io/keycloak/keycloak:26.0
+    build: ./docker/keycloak
+    command: ["start", "--import-realm", "--optimized"]
+    entrypoint: ["/bin/sh", "-c", "/opt/keycloak/bin/kc.sh build && exec /opt/keycloak/bin/kc.sh start --import-realm --optimized"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: ${POSTGRES_USER:-royalknot}
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:-kcadmin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?set KEYCLOAK_ADMIN_PASSWORD}
+      KC_API_CLIENT_SECRET: ${KC_API_CLIENT_SECRET:-royalknot_api_secret_2026}
+      KC_HOSTNAME: ${KEYCLOAK_PUBLIC_URL:-http://auth.localhost}
+      KC_HOSTNAME_STRICT: "false"
+      KC_HTTP_ENABLED: "true"
+      KC_PROXY_HEADERS: xforwarded
+      KC_HEALTH_ENABLED: "true"
+      JAVA_OPTS_APPEND: "-Xms256m -Xmx512m -XX:MetaspaceSize=96M -XX:MaxMetaspaceSize=256m"
+    volumes:
+      - ./docker/keycloak/royalknot-realm.json:/opt/keycloak/data/import/royalknot-realm.json:ro
+    expose: ["8080"]
+    networks:
+      royalknot-internal:
+        aliases: [keycloak, rk-keycloak]
+      dokploy-network:
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q '\"status\": \"UP\"' <&3"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 90s
+
+  hyperswitch:
+    <<: *restart
+    image: juspaydotin/hyperswitch-router:standalone
+    command: ["/local/bin/router", "-f", "/local/config/config.toml"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    environment:
+      RUN_ENV: sandbox
+      ROUTER__SERVER__HOST: 0.0.0.0
+      ROUTER__SERVER__PORT: 8080
+      ROUTER__DUMMY_CONNECTOR__ENABLED: "true"
+      ROUTER__MASTER_DATABASE__HOST: postgres
+      ROUTER__MASTER_DATABASE__PORT: "5432"
+      ROUTER__MASTER_DATABASE__DB_NAME: hyperswitch
+      ROUTER__MASTER_DATABASE__USERNAME: ${POSTGRES_USER:-royalknot}
+      ROUTER__MASTER_DATABASE__PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      ROUTER__REDIS__HOST: redis
+      ROUTER__REDIS__PORT: "6379"
+    volumes:
+      - ./docker/hyperswitch/config.toml:/local/config/config.toml:ro
+    expose: ["8080"]
+    networks:
+      royalknot-internal:
+        aliases: [hyperswitch, rk-hyperswitch]
+      dokploy-network:
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  backend:
+    <<: *restart
+    image: royalknot-backend:${IMAGE_TAG:-local}
+    build: ./backend
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      minio: { condition: service_healthy }
+      minio-init: { condition: service_completed_successfully }
+      gotenberg: { condition: service_healthy }
+    environment:
+      NODE_ENV: production
+      PORT: "4000"
+      DATABASE_URL: postgresql://${POSTGRES_USER:-royalknot}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/royalknot?schema=public
+      REDIS_URL: redis://redis:6379
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?set JWT_ACCESS_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?set JWT_REFRESH_SECRET}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      FRONTEND_URL: ${PUBLIC_APP_URL:-http://app.localhost}
+      CORS_ORIGIN: ${PUBLIC_APP_URL:-http://app.localhost}
+      MINIO_ENDPOINT: minio
+      MINIO_PORT: "9000"
+      MINIO_USE_SSL: "false"
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-royalknot}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET:-royalknot-documents}
+      GOTENBERG_URL: http://gotenberg:3000
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      MAIL_FROM: ${MAIL_FROM:-no-reply@royalknot.local}
+      UPI_VPA: ${UPI_VPA:-royalknot@upi}
+      # Split-horizon Keycloak OIDC
+      KEYCLOAK_ENABLED: ${KEYCLOAK_ENABLED:-true}
+      KEYCLOAK_INTERNAL_URL: ${KEYCLOAK_INTERNAL_URL:-http://keycloak:8080}
+      KEYCLOAK_PUBLIC_ISSUER: ${KEYCLOAK_PUBLIC_URL:-http://auth.localhost}/realms/royalknot
+      KEYCLOAK_ISSUER: ${KEYCLOAK_PUBLIC_URL:-http://auth.localhost}/realms/royalknot
+      KEYCLOAK_REALM: royalknot
+      KEYCLOAK_CLIENT_ID: royalknot-web
+      KEYCLOAK_CLIENT_SECRET: ${KC_API_CLIENT_SECRET:-royalknot_api_secret_2026}
+      # Hyperswitch payment router URL (with RoyalPay fallback)
+      HYPERSWITCH_URL: ${HYPERSWITCH_URL:-http://hyperswitch:8080}
+      # Database seed
+      SEED_ON_START: ${SEED_ON_START:-true}
+      SEED_FORCE: ${SEED_FORCE:-false}
+      DEMO_PASSWORD: ${DEMO_PASSWORD:-RoyalKnot@2026}
+    expose: ["4000"]
+    networks:
+      royalknot-internal:
+        aliases: [backend, rk-backend]
+      dokploy-network:
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:4000/api/v1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 120s
+
+  frontend:
+    <<: *restart
+    image: royalknot-frontend:${IMAGE_TAG:-local}
+    build:
+      context: ./frontend
+      args:
+        BACKEND_URL: http://backend:4000
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-}
+        NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-}
+        NEXT_PUBLIC_KEYCLOAK_URL: ${KEYCLOAK_PUBLIC_URL:-http://auth.localhost}
+        NEXT_PUBLIC_KEYCLOAK_REALM: royalknot
+        NEXT_PUBLIC_KEYCLOAK_CLIENT_ID: royalknot-web
+        NEXT_PUBLIC_DEMO_MODE: ${NEXT_PUBLIC_DEMO_MODE:-true}
+    depends_on:
+      backend: { condition: service_healthy }
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+    expose: ["3000"]
+    networks:
+      royalknot-internal:
+        aliases: [frontend, rk-frontend]
+      dokploy-network:
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  db-backup:
+    <<: *restart
+    image: prodrigestivill/postgres-backup-local:16
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: royalknot
+      POSTGRES_USER: ${POSTGRES_USER:-royalknot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      SCHEDULE: ${BACKUP_SCHEDULE:-@daily}
+      BACKUP_KEEP_DAYS: "7"
+      BACKUP_KEEP_WEEKS: "4"
+      BACKUP_KEEP_MONTHS: "6"
+      HEALTHCHECK_PORT: "8080"
+    volumes:
+      - backups_data:/backups
+    networks:
+      - royalknot-internal
 
 networks:
-  internal:
+  royalknot-internal:
+    driver: bridge
   dokploy-network:
     external: true
 
 volumes:
-  pgdata:
-  redisdata:
-  miniodata:
+  postgres_data:
+  redis_data:
+  minio_data:
+  backups_data:

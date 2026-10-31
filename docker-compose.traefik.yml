@@ -1,0 +1,42 @@
+# Traefik labels overlay for running the stack with Dokploy Traefik:
+#   docker compose -f docker-compose.yml -f docker-compose.traefik.yml up -d
+services:
+  frontend:
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=dokploy-network
+      - traefik.http.routers.rk-app.rule=Host(`app.${BASE_DOMAIN:-localhost}`)
+      - traefik.http.routers.rk-app.entrypoints=${TRAEFIK_ENTRYPOINT:-web}
+      - traefik.http.services.rk-app.loadbalancer.server.port=3000
+
+  backend:
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=dokploy-network
+      - traefik.http.routers.rk-api.rule=Host(`api.${BASE_DOMAIN:-localhost}`)
+      - traefik.http.routers.rk-api.entrypoints=${TRAEFIK_ENTRYPOINT:-web}
+      - traefik.http.services.rk-api.loadbalancer.server.port=4000
+
+  keycloak:
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=dokploy-network
+      - traefik.http.routers.rk-auth.rule=Host(`auth.${BASE_DOMAIN:-localhost}`)
+      - traefik.http.routers.rk-auth.entrypoints=${TRAEFIK_ENTRYPOINT:-web}
+      - traefik.http.services.rk-auth.loadbalancer.server.port=8080
+
+  mailpit:
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=dokploy-network
+      - traefik.http.routers.rk-mail.rule=Host(`mail.${BASE_DOMAIN:-localhost}`)
+      - traefik.http.routers.rk-mail.entrypoints=${TRAEFIK_ENTRYPOINT:-web}
+      - traefik.http.services.rk-mail.loadbalancer.server.port=8025
+
+  hyperswitch:
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=dokploy-network
+      - traefik.http.routers.rk-pay.rule=Host(`pay.${BASE_DOMAIN:-localhost}`)
+      - traefik.http.routers.rk-pay.entrypoints=${TRAEFIK_ENTRYPOINT:-web}
+      - traefik.http.services.rk-pay.loadbalancer.server.port=8080
