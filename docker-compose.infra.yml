@@ -1,0 +1,37 @@
+# Infra-only stack for local development (apps run on host with npm).
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: royalknot
+      POSTGRES_PASSWORD: royalknot_dev
+      POSTGRES_DB: royalknot
+    ports: ["127.0.0.1:5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U royalknot"]
+      interval: 5s
+      retries: 10
+  redis:
+    image: redis:7-alpine
+    ports: ["127.0.0.1:6379:6379"]
+    volumes: [redisdata:/data]
+  minio:
+    build: ./deploy/minio
+    image: royalknot-minio:local
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: royalknot
+      MINIO_ROOT_PASSWORD: royalknot_dev_secret
+    ports: ["127.0.0.1:9000:9000", "127.0.0.1:9001:9001"]
+    volumes: [miniodata:/data]
+  gotenberg:
+    image: gotenberg/gotenberg:8
+    ports: ["127.0.0.1:3003:3000"]
+  mailpit:
+    image: axllent/mailpit:latest
+    ports: ["127.0.0.1:1025:1025", "127.0.0.1:8025:8025"]
+volumes:
+  pgdata:
+  redisdata:
+  miniodata:

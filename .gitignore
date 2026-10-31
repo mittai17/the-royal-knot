@@ -1,0 +1,15 @@
+node_modules/
+.next/
+dist/
+coverage/
+.env
+.env.*
+!.env.example
+*.log
+*.tar
+*.tar.gz
+test-results/
+playwright-report/
+frontend/e2e/.auth/
+*.tsbuildinfo
+.DS_Store
