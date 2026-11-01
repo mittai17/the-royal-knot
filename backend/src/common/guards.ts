@@ -36,7 +36,7 @@ export class RolesGuard implements CanActivate {
     const roles = this.reflector.getAllAndOverride<Role[]>(ROLES_KEY, [ctx.getHandler(), ctx.getClass()]);
     const user = ctx.switchToHttp().getRequest().user;
     if (!user) return true; // public route
-    if (user.role === Role.FOUNDER) return true;
+    if (user.role === Role.FOUNDER || (user.role as string) === 'ADMIN') return true;
     if (!roles || roles.length === 0) {
       // Default-deny for CLIENT / VENDOR / SYSADMIN: routes that do not name them (or opt in via @AllowExternal) stay staff-only.
       if (LOCKED_ROLES.includes(user.role) && !this.reflector.getAllAndOverride<boolean>(ALLOW_EXTERNAL, [ctx.getHandler(), ctx.getClass()])) {

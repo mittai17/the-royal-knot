@@ -157,6 +157,11 @@ async function upsertKeycloakUsers() {
       create: { ...u, ...scope, passwordHash, mustChangePassword: false },
     });
   }
+  // Assign demo weddings to Priya Nair (demo planner) so planner has scoped access
+  await prisma.wedding.updateMany({
+    where: { name: { in: ['Mehta Wedding', 'Khanna Wedding', 'Malhotra Wedding'] } },
+    data: { plannerId: '22222222-2222-2222-2222-222222222222' },
+  });
   console.log(`Keycloak demo users upserted: ${KEYCLOAK_USERS.map((u) => u.email).join(', ')}`);
 }
 

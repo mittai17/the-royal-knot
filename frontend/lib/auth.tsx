@@ -21,7 +21,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try { await api.post('/auth/logout'); } finally { setUser(null); location.href = '/login'; }
   }, []);
 
-  const can = useCallback((...roles: Role[]) => !!user && (user.role === 'FOUNDER' || roles.includes(user.role)), [user]);
+  const can = useCallback((...roles: Role[]) => !!user && (user.role === 'FOUNDER' || (user.role as string) === 'ADMIN' || roles.includes(user.role)), [user]);
   return <Ctx.Provider value={{ user, loading, refresh, logout, can }}>{children}</Ctx.Provider>;
 }
 
@@ -31,7 +31,7 @@ export function useAuth(): AuthCtx {
   return c;
 }
 
-export const ROLE_LABEL: Record<Role, string> = {
-  FOUNDER: 'Founder / Director', PLANNER: 'Wedding Planner', EVENT_MANAGER: 'Event Manager', FINANCE: 'Finance Manager', OPERATIONS: 'Operations Staff',
+export const ROLE_LABEL: Record<string, string> = {
+  FOUNDER: 'Founder / Director', ADMIN: 'Founder / Director', PLANNER: 'Wedding Planner', EVENT_MANAGER: 'Event Manager', FINANCE: 'Finance Manager', OPERATIONS: 'Operations Staff',
   CLIENT: 'Couple / Client', VENDOR: 'Vendor', SYSADMIN: 'System Administrator',
 };

@@ -129,13 +129,17 @@ export const NAV_BY_ROLE: Record<Role, NavGroup[]> = {
 };
 
 /** Sidebar groups for a role. */
-export function navFor(role: Role | undefined): NavGroup[] {
-  return role ? NAV_BY_ROLE[role] : [];
+export function navFor(role: Role | undefined | string): NavGroup[] {
+  if (!role) return [];
+  const normalized = (role === 'ADMIN' ? 'FOUNDER' : role) as Role;
+  return NAV_BY_ROLE[normalized] ?? [];
 }
 
 /** Every item (children included) in sidebar order. */
-export function flatNav(role: Role | undefined): NavItem[] {
-  return navFor(role).flatMap((grp) => grp.items.flatMap((i) => [i, ...(i.children ?? [])]));
+export function flatNav(role: Role | undefined | string): NavItem[] {
+  const groups = navFor(role);
+  if (!groups || !Array.isArray(groups)) return [];
+  return groups.flatMap((grp) => (grp?.items || []).flatMap((i) => [i, ...(i?.children ?? [])]));
 }
 
 /** Where a role's profile / preferences screen lives (null: none, SYSADMIN has no generic Settings). */

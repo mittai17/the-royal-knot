@@ -46,7 +46,12 @@ function LoginForm() {
     catch (e) { setError(e instanceof Error ? e.message : 'Unable to sign in'); }
   };
   const onSubmit = (v: Form) => signIn(endpoint, v);
-  const switchTo = async (email: string) => { setSwitching(email); await signIn('/auth/keycloak/login', { email, password: DEMO_PASSWORD }); setSwitching(null); };
+  const switchTo = async (email: string) => {
+    setSwitching(email);
+    const loginPath = kc?.enabled && mode === 'keycloak' ? '/auth/keycloak/login' : '/auth/login';
+    await signIn(loginPath, { email, password: DEMO_PASSWORD });
+    setSwitching(null);
+  };
 
   return (
     <div className="w-full max-w-[400px] space-y-5">

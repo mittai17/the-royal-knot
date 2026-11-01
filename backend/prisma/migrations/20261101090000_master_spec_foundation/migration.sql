@@ -21,21 +21,27 @@
 -- 1. Pure renames and additive values
 -- ---------------------------------------------------------------------------------------------------------------
 BEGIN;
-ALTER TYPE "Role" RENAME VALUE 'ADMIN' TO 'FOUNDER';
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_enum JOIN pg_type ON pg_enum.enumtypid = pg_type.oid WHERE typname = 'Role' AND enumlabel = 'ADMIN')
+     AND NOT EXISTS (SELECT 1 FROM pg_enum JOIN pg_type ON pg_enum.enumtypid = pg_type.oid WHERE typname = 'Role' AND enumlabel = 'FOUNDER') THEN
+    ALTER TYPE "Role" RENAME VALUE 'ADMIN' TO 'FOUNDER';
+  END IF;
+END $$;
 ALTER TYPE "AgreementStatus" RENAME VALUE 'VOID' TO 'EXPIRED';
-ALTER TYPE "AgreementStatus" ADD VALUE 'REJECTED' BEFORE 'EXPIRED';
+ALTER TYPE "AgreementStatus" ADD VALUE IF NOT EXISTS 'REJECTED' BEFORE 'EXPIRED';
 ALTER TYPE "ArrivalStatus" RENAME VALUE 'NOT_ARRIVED' TO 'EXPECTED';
-ALTER TYPE "ArrivalStatus" ADD VALUE 'ON_THE_WAY' AFTER 'EXPECTED';
+ALTER TYPE "ArrivalStatus" ADD VALUE IF NOT EXISTS 'ON_THE_WAY' AFTER 'EXPECTED';
 ALTER TYPE "RoomAllocationStatus" RENAME VALUE 'RESERVED' TO 'CONFIRMED';
-ALTER TYPE "RoomAllocationStatus" ADD VALUE 'PENDING' BEFORE 'CONFIRMED';
+ALTER TYPE "RoomAllocationStatus" ADD VALUE IF NOT EXISTS 'PENDING' BEFORE 'CONFIRMED';
 ALTER TYPE "IncidentStatus" RENAME VALUE 'OPEN' TO 'REPORTED';
-ALTER TYPE "IncidentStatus" ADD VALUE 'TRIAGED' AFTER 'REPORTED';
-ALTER TYPE "IncidentStatus" ADD VALUE 'ASSIGNED' AFTER 'TRIAGED';
-ALTER TYPE "IncidentStatus" ADD VALUE 'CLOSED' AFTER 'RESOLVED';
+ALTER TYPE "IncidentStatus" ADD VALUE IF NOT EXISTS 'TRIAGED' AFTER 'REPORTED';
+ALTER TYPE "IncidentStatus" ADD VALUE IF NOT EXISTS 'ASSIGNED' AFTER 'TRIAGED';
+ALTER TYPE "IncidentStatus" ADD VALUE IF NOT EXISTS 'CLOSED' AFTER 'RESOLVED';
 ALTER TYPE "ClientInvoiceStatus" RENAME VALUE 'VOID' TO 'CANCELLED';
-ALTER TYPE "VendorBillStatus" ADD VALUE 'DRAFT' BEFORE 'SUBMITTED';
-ALTER TYPE "VendorBillStatus" ADD VALUE 'PARTIALLY_PAID' AFTER 'APPROVED';
-ALTER TYPE "ApprovalType" ADD VALUE 'BUDGET_INCREASE' BEFORE 'OTHER';
+ALTER TYPE "VendorBillStatus" ADD VALUE IF NOT EXISTS 'DRAFT' BEFORE 'SUBMITTED';
+ALTER TYPE "VendorBillStatus" ADD VALUE IF NOT EXISTS 'PARTIALLY_PAID' AFTER 'APPROVED';
+ALTER TYPE "ApprovalType" ADD VALUE IF NOT EXISTS 'BUDGET_INCREASE' BEFORE 'OTHER';
 COMMIT;
 
 -- ---------------------------------------------------------------------------------------------------------------
