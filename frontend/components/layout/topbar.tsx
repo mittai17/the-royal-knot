@@ -207,15 +207,15 @@ export function Topbar({ onMenu }: { onMenu: () => void }) {
           )}
         </Menu_>
 
-        {quick.length > 0 && (<Menu_ trigger={() => <button className="btn-primary h-11 px-5 rounded-xl"><Plus className="h-4 w-4" /><span className="hidden sm:inline">New Wedding</span></button>} width="w-56">
-          {(close) => (
-            <div>
-              {quick.map(({ l, i: I, h }) => (
-                <button key={l} className="w-full text-left px-3 py-2 rounded-lg hover:bg-surface-2 flex items-center gap-2 text-sm" onClick={() => { close(); router.push(h); }}><I className="h-4 w-4 text-burgundy" />{l}</button>
-              ))}
-            </div>
-          )}
-        </Menu_>)}
+        {quick.length > 0 && (        <Menu_ trigger={() => <button className="btn-primary h-11 px-5 rounded-xl"><Plus className="h-4 w-4" /><span className="hidden sm:inline">New Wedding</span></button>} width="w-56">
+            {(close) => (
+              <div>
+                {quick.map(({ l, i: I, h }) => (
+                  <button key={l} className="w-full text-left px-3 py-2 rounded-lg hover:bg-surface-2 flex items-center gap-2 text-sm" onClick={() => { close(); router.push(h); }}><I className="h-4 w-4 text-burgundy" />{l}</button>
+                ))}
+              </div>
+            )}
+          </Menu_>)}
 
         <Menu_ trigger={() => <button className="flex items-center gap-2.5 pl-1 rounded-full" aria-label="Account menu" title={user ? ROLE_LABEL[user.role] : ''}><Avatar name={user?.name} size={38} /></button>} width="w-64">
           {(close) => <ProfileMenu close={close} />}
