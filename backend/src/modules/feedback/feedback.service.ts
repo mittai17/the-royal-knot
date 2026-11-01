@@ -15,7 +15,7 @@ import { FeedbackQuery, SubmitFeedbackDto, UpdateFeedbackDto } from './feedback.
 
 const include = { wedding: { select: { id: true, name: true } } } satisfies Prisma.FeedbackRequestInclude;
 type Row = Prisma.FeedbackRequestGetPayload<{ include: typeof include }>;
-const USER_LINK: Record<Role, string> = { ADMIN: '/feedback', PLANNER: '/feedback', EVENT_MANAGER: '/feedback', FINANCE: '/feedback', OPERATIONS: '/feedback', CLIENT: '/client-portal/feedback', VENDOR: '/vendor-portal/support', SYSADMIN: '/feedback' };
+const USER_LINK: Record<Role, string> = { FOUNDER: '/feedback', PLANNER: '/feedback', EVENT_MANAGER: '/feedback', FINANCE: '/feedback', OPERATIONS: '/feedback', CLIENT: '/client-portal/feedback', VENDOR: '/vendor-portal/support', SYSADMIN: '/feedback' };
 
 @Injectable()
 export class FeedbackService {
@@ -37,7 +37,7 @@ export class FeedbackService {
       return { kind: FeedbackKind.SUPPORT, submittedById: { in: mates } };
     }
     if (u.role === Role.PLANNER) return { OR: [{ weddingId: null }, { wedding: { plannerId: u.id } }, { assignedToId: u.id }, { submittedById: u.id }] };
-    if (u.role === Role.ADMIN || u.role === Role.EVENT_MANAGER) return {};
+    if (u.role === Role.FOUNDER || u.role === Role.EVENT_MANAGER) return {};
     throw new ForbiddenException('Your role does not allow this action');
   }
 

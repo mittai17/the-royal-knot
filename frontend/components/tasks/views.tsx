@@ -11,7 +11,7 @@ import { TASK_STATUSES } from '@/lib/enums';
 import { cn, fmtDate, humanize } from '@/lib/utils';
 import type { Task } from '@/types';
 
-const overdue = (t: Task) => t.status !== 'COMPLETED' && new Date(t.dueDate) < new Date();
+const overdue = (t: Task) => t.status !== 'DONE' && new Date(t.dueDate) < new Date();
 const PRI_DOT: Record<string, string> = { URGENT: 'bg-danger', HIGH: 'bg-warning', MEDIUM: 'bg-info', LOW: 'bg-line' };
 
 export function KanbanView({ tasks, onOpen, onChanged }: { tasks: Task[]; onOpen: (t: Task) => void; onChanged: () => void }) {
@@ -68,7 +68,7 @@ export function CalendarView({ tasks, onOpen }: { tasks: Task[]; onOpen: (t: Tas
           return (
             <div key={d.toISOString()} className={cn('min-h-[104px] p-1.5 border-r border-b border-line bg-white', !isSameMonth(d, month) && 'bg-surface-2/40')}>
               <span className={cn('inline-grid place-items-center h-6 w-6 text-xs rounded-full', isToday(d) ? 'bg-burgundy text-white' : 'text-ink-soft')}>{format(d, 'd')}</span>
-              <div className="space-y-1 mt-1">{items.slice(0, 3).map((t) => <button key={t.id} onClick={() => onOpen(t)} className={cn('w-full truncate text-left text-[11px] rounded px-1.5 py-0.5', t.status === 'COMPLETED' ? 'bg-success-soft text-success line-through' : overdue(t) ? 'bg-danger-soft text-danger' : 'bg-gold-soft text-burgundy')}>{t.name}</button>)}{items.length > 3 && <p className="text-[10px] text-ink-soft px-1">+{items.length - 3} more</p>}</div>
+              <div className="space-y-1 mt-1">{items.slice(0, 3).map((t) => <button key={t.id} onClick={() => onOpen(t)} className={cn('w-full truncate text-left text-[11px] rounded px-1.5 py-0.5', t.status === 'DONE' ? 'bg-success-soft text-success line-through' : overdue(t) ? 'bg-danger-soft text-danger' : 'bg-gold-soft text-burgundy')}>{t.name}</button>)}{items.length > 3 && <p className="text-[10px] text-ink-soft px-1">+{items.length - 3} more</p>}</div>
             </div>
           );
         })}
@@ -92,7 +92,7 @@ export function TimelineView({ tasks, onOpen }: { tasks: Task[]; onOpen: (t: Tas
             <button key={t.id} onClick={() => onOpen(t)} className="flex items-center w-full group text-left">
               <span className="w-[240px] shrink-0 pr-3 truncate text-xs group-hover:text-burgundy">{t.name}</span>
               <span className="relative flex-1 h-5 bg-surface-2/60 rounded">
-                <span className={cn('absolute top-0.5 h-4 w-4 rounded-full -translate-x-1/2 ring-2 ring-white', t.status === 'COMPLETED' ? 'bg-success' : overdue(t) ? 'bg-danger' : t.status === 'IN_PROGRESS' ? 'bg-info' : 'bg-gold')} style={{ left: `${left}%` }} title={`${t.name} · ${fmtDate(t.dueDate)}`} />
+                <span className={cn('absolute top-0.5 h-4 w-4 rounded-full -translate-x-1/2 ring-2 ring-white', t.status === 'DONE' ? 'bg-success' : overdue(t) ? 'bg-danger' : t.status === 'IN_PROGRESS' ? 'bg-info' : 'bg-gold')} style={{ left: `${left}%` }} title={`${t.name} · ${fmtDate(t.dueDate)}`} />
               </span>
             </button>
           );

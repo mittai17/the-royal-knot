@@ -4,7 +4,7 @@ export interface ApiMeta { page?: number; pageSize?: number; total?: number; tot
 export interface ApiResult<T> { data: T; meta?: ApiMeta }
 
 export class ApiError extends Error {
-  constructor(public status: number, public code: string, message: string) {
+  constructor(public status: number, public code: string, message: string, public reason?: string, public details?: unknown) {
     super(message);
   }
 }
@@ -45,14 +45,16 @@ async function request<T>(method: string, path: string, opts: { body?: unknown; 
     }
   }
   if (!res.ok) {
-    let code = 'ERROR', message = res.statusText;
+    let code = 'ERROR', message = res.statusText, reason: string | undefined, details: unknown;
     try {
       const j = await res.json();
+      reason = j?.error?.reason;
+      details = j?.error?.details;
       code = j?.error?.code ?? code;
       const m = j?.error?.message ?? j?.message ?? message;
       message = Array.isArray(m) ? m.join(', ') : m;
     } catch { /* non-JSON error */ }
-    throw new ApiError(res.status, code, message);
+    throw new ApiError(res.status, code, message, reason, details);
   }
   if (res.status === 204) return { data: undefined as T };
   const json = await res.json();

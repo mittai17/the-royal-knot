@@ -1,18 +1,19 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException, StreamableFile, UnprocessableEntityException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { AuthUser } from '../../common/decorators';
-import { clientBilling, D, extraGuestCharge, money, sum } from '../../common/finance';
+import { clientBilling, clientReceived, D, extraGuestCharge, money, sum } from '../../common/finance';
 import { syncMilestones } from '../../common/milestones';
 import { PdfService } from '../../common/pdf.service';
 import { inr, kv, page, table } from '../../common/pdf-templates';
 import { vendorBill } from '../../common/vendor-bill';
 import { PrismaService } from '../../database/prisma.service';
 import { AuditService } from '../audit/audit.service';
+import { VendorPaymentsService } from '../vendor-payments/vendor-payments.service';
 import { CreateChargeDto, InvoiceDto, SettleDto, UpdateChargeDto } from './reconciliation.dto';
 
 @Injectable()
 export class ReconciliationService {
-  constructor(private prisma: PrismaService, private audit: AuditService, private pdf: PdfService) {}
+  constructor(private prisma: PrismaService, private audit: AuditService, private pdf: PdfService, private vp: VendorPaymentsService) {}
 
   /** Creates the reconciliation shell, one settlement per vendor, and keeps the auto extra-guest charge in sync with actual attendance. */
   async ensure(weddingId: string, db: Prisma.TransactionClient | PrismaServiceLike = this.prisma) {
@@ -52,14 +53,16 @@ export class ReconciliationService {
       this.prisma.wedding.findUniqueOrThrow({ where: { id: weddingId }, include: { couple: true } }),
       this.prisma.additionalCharge.findMany({ where: { reconciliationId: rec.id }, orderBy: { createdAt: 'asc' }, include: { } }),
       this.prisma.vendorSettlement.findMany({ where: { reconciliationId: rec.id }, include: { weddingVendor: { include: { vendor: { select: { id: true, name: true } } } } } }),
-      this.prisma.clientPayment.aggregate({ where: { weddingId }, _sum: { amount: true } }),
+      this.prisma.clientPayment.findMany({ where: { weddingId }, select: { amount: true, status: true, reversalOfId: true } }),
     ]);
+    const vbills = await this.prisma.vendorBill.findMany({ where: { weddingId, status: { not: 'REJECTED' } }, select: { vendorId: true, total: true, amountPaid: true } });
     const vendors = await Promise.all(settlements.map(async (s) => {
       const b = await vendorBill(this.prisma, s.weddingVendorId);
-      return { settlementId: s.id, weddingVendorId: s.weddingVendorId, vendor: s.weddingVendor.vendor, category: s.weddingVendor.category, status: s.status, settledAt: s.settledAt, invoiceRef: s.invoiceRef, actualInvoice: s.actualInvoice, originalQuoted: s.originalQuoted, ...b, wv: undefined, invoiceEntered: s.actualInvoice != null };
+      const mine = vbills.filter((x) => x.vendorId === s.weddingVendor.vendorId);
+      return { billsTotal: money(sum(mine.map((x) => x.total))), billsPaid: money(sum(mine.map((x) => x.amountPaid))), billCount: mine.length, settlementId: s.id, weddingVendorId: s.weddingVendorId, vendor: s.weddingVendor.vendor, category: s.weddingVendor.category, status: s.status, settledAt: s.settledAt, invoiceRef: s.invoiceRef, actualInvoice: s.actualInvoice, originalQuoted: s.originalQuoted, ...b, wv: undefined, invoiceEntered: s.actualInvoice != null };
     }));
     const approvedClient = charges.filter((c) => c.approved && c.billToClient);
-    const billing = clientBilling({ contractValue: w.contractValue, approvedExtras: sum(approvedClient.map((c) => c.amount)), received: payments._sum.amount ?? 0 });
+    const billing = clientBilling({ contractValue: w.contractValue, approvedExtras: sum(approvedClient.map((c) => c.amount)), received: clientReceived(payments) });
     return {
       reconciliationId: rec.id, status: rec.status, wedding: { id: w.id, name: w.name, expectedGuests: w.expectedGuests, actualGuests: w.actualGuests, extraGuests: Math.max(0, (w.actualGuests ?? w.expectedGuests) - w.expectedGuests) },
       charges: charges.map((c) => ({ ...c, vendorName: vendors.find((v) => v.weddingVendorId === c.weddingVendorId)?.vendor.name ?? null })),
@@ -91,13 +94,27 @@ export class ReconciliationService {
     });
   }
 
-  async deleteCharge(id: string, actor: AuthUser) {
+  /**
+   * Charges are never deleted. Voiding posts a negative counter-entry ("[VOID:<id>] ...") with the same approval state, so totals net to zero and
+   * both rows stay in the history. Automatic charges follow the guest count instead.
+   */
+  async voidCharge(id: string, reason: string, actor: AuthUser) {
     const c = await this.prisma.additionalCharge.findUnique({ where: { id }, include: { reconciliation: true } });
     if (!c) throw new NotFoundException('Charge not found');
     if (c.auto) throw new BadRequestException('Automatic charges follow the guest count; adjust the actual guest count instead');
-    await this.prisma.$transaction(async (tx) => { await tx.additionalCharge.delete({ where: { id } }); await this.resyncFinalMilestone(tx, c.reconciliation.weddingId); });
-    await this.audit.log({ actorId: actor.id, weddingId: c.reconciliation.weddingId, entity: 'AdditionalCharge', entityId: id, action: 'delete', message: `Removed charge ${c.description}` });
-    return { ok: true };
+    if (c.description.startsWith('[VOID:')) throw new BadRequestException('This entry is already a void entry');
+    if (c.reconciliation.status === 'CLOSED') throw new ConflictException('Reconciliation is closed');
+    const weddingId = c.reconciliation.weddingId;
+    const marker = `[VOID:${id}]`;
+    const entry = await this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${'void:' + id}))`;
+      if (await tx.additionalCharge.findFirst({ where: { reconciliationId: c.reconciliationId, description: { startsWith: marker } } })) throw new ConflictException('This charge was already voided');
+      const e = await tx.additionalCharge.create({ data: { reconciliationId: c.reconciliationId, weddingVendorId: c.weddingVendorId, type: c.type, description: `${marker} ${reason} (voids: ${c.description})`.slice(0, 500), quantity: c.quantity, unitPrice: c.unitPrice, amount: money(D(c.amount).neg()), approved: c.approved, billToClient: c.billToClient, auto: false } });
+      await this.resyncFinalMilestone(tx, weddingId);
+      await this.audit.log({ actorId: actor.id, weddingId, entity: 'AdditionalCharge', entityId: id, action: 'void', message: `Voided charge ${inr(c.amount)} — ${c.description} (${reason})`, meta: { voidEntryId: e.id, reason } }, tx);
+      return e;
+    });
+    return { voided: c.id, entry };
   }
 
   /** "Update the final client billing": FINAL milestone absorbs approved client-billable extras. */
@@ -136,7 +153,7 @@ export class ReconciliationService {
           if (fresh.actualInvoice == null) { if (dto.weddingVendorId) throw new UnprocessableEntityException('Enter the vendor\'s final invoice before settling'); return; }
           const b = await vendorBill(tx, s.weddingVendorId);
           if (D(b.remainingPayable).lte(0)) { if (dto.weddingVendorId) throw new ConflictException('Nothing payable — vendor is already fully paid'); await tx.vendorSettlement.update({ where: { id: s.id }, data: { status: 'SETTLED', settledAt: fresh.settledAt ?? new Date() } }); return; }
-          await tx.vendorPayment.create({ data: { weddingId: rec.weddingId, weddingVendorId: s.weddingVendorId, kind: 'FINAL', amount: b.remainingPayable, method: dto.method, reference: dto.reference, idempotencyKey: key, paidAt: new Date(), recordedById: actor.id } });
+          await this.vp.postDirect(tx, { weddingId: rec.weddingId, weddingVendorId: s.weddingVendorId, kind: 'FINAL', amount: b.remainingPayable, method: dto.method, reference: dto.reference, idempotencyKey: key, paidAt: new Date(), notes: 'Final settlement' }, actor);
           await tx.vendorSettlement.update({ where: { id: s.id }, data: { status: 'SETTLED', settledAt: new Date() } });
           paid.push({ vendor: b.wv.vendor.name, amount: b.remainingPayable });
           await this.audit.log({ actorId: actor.id, weddingId: rec.weddingId, entity: 'VendorSettlement', entityId: s.id, action: 'settle', message: `Settled ${b.wv.vendor.name}: paid ${inr(b.remainingPayable)} (final bill ${inr(b.finalBill)})`, meta: { reference: dto.reference ?? null } }, tx);

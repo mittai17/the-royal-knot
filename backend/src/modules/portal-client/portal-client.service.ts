@@ -2,7 +2,9 @@ import { BadRequestException, ForbiddenException, Injectable, NotFoundException,
 import { InjectQueue } from '@nestjs/bullmq';
 import { DocumentCategory, Prisma } from '@prisma/client';
 import { Queue } from 'bullmq';
+import { AGREEMENT_NOT_SIGNED, isAgreementSigned, LOCKED_STATE, signedWeddingIds } from '../../common/agreement-gate';
 import { AuthUser } from '../../common/decorators';
+import { QuotationsService } from '../quotations/quotations.service';
 import { dt } from '../../common/pdf-templates';
 import { ScopeService } from '../../common/scope.service';
 import { PrismaService } from '../../database/prisma.service';
@@ -23,7 +25,7 @@ const ist = (d: Date) => new Date(d.getTime() + 19_800_000).toISOString().slice(
 export class PortalClientService {
   constructor(
     private prisma: PrismaService, private scope: ScopeService, private audit: AuditService, private guests: GuestsService, private payments: PaymentsService,
-    private weddings: WeddingsService, private docs: DocumentsService, private agreements: AgreementsService, @InjectQueue('email') private email: Queue,
+    private weddings: WeddingsService, private docs: DocumentsService, private agreements: AgreementsService, private quotations: QuotationsService, @InjectQueue('email') private email: Queue,
   ) {}
 
   /** The wedding the portal shows: the requested one (must be the couple's own), else the next upcoming, else the latest. */
@@ -51,7 +53,7 @@ export class PortalClientService {
       this.prisma.weddingEvent.findMany({ where: { weddingId: w.id, date: { gte: new Date(Date.now() - 864e5) } }, orderBy: { date: 'asc' }, take: 4 }),
     ]);
     const total = taskGroups.reduce((a, g) => a + g._count, 0);
-    const done = taskGroups.find((g) => g.status === 'COMPLETED')?._count ?? 0;
+    const done = taskGroups.find((g) => g.status === 'DONE')?._count ?? 0;
     const progress = (await this.weddings.progressFor([w.id]))[w.id] ?? 0;
     const next = pay.milestones.filter((m) => m.status !== 'PAID').sort((a, b) => a.dueDate.getTime() - b.dueDate.getTime())[0];
     const expected = Number(pay.totals.expected);
@@ -60,7 +62,7 @@ export class PortalClientService {
       daysToGo: Math.max(0, Math.ceil((w.startDate.getTime() - Date.now()) / 864e5)),
       tasks: { done, total },
       progress,
-      guests: { expected: guestStats.weddingExpected, invited: guestStats.invitedHeadcount, invitations: guestStats.guests, confirmed: guestStats.confirmed, declined: guestStats.declined, pending: guestStats.pending + guestStats.maybe },
+      guests: { expected: guestStats.weddingExpected, invited: guestStats.invitedHeadcount, invitations: guestStats.guests, confirmed: guestStats.confirmed, declined: guestStats.declined, pending: guestStats.pending },
       payments: { expected: pay.totals.expected, received: pay.totals.received, outstanding: pay.totals.outstanding, percentPaid: expected > 0 ? Math.round((Number(pay.totals.received) / expected) * 100) : 0, completedMilestones: pay.milestones.filter((m) => m.status === 'PAID').length, totalMilestones: pay.milestones.length, next: next ? { id: next.id, type: next.type, dueDate: next.dueDate, outstanding: next.outstanding, status: next.status } : null },
       upcomingEvents: events.map((e) => ({ id: e.id, name: e.name, kind: e.kind, date: e.date, venue: e.venue })),
       planner: w.planner,
@@ -76,7 +78,8 @@ export class PortalClientService {
       this.prisma.agreementSignature.findFirst({ where: { agreement: { weddingId: w.id, status: 'SIGNED' } }, orderBy: { signedAt: 'asc' } }),
       this.prisma.clientPayment.findFirst({ where: { weddingId: w.id }, orderBy: { paidAt: 'asc' } }),
     ]);
-    const bookings = await this.prisma.weddingVendor.findMany({ where: { weddingId: w.id }, orderBy: { createdAt: 'asc' }, include: { vendor: { select: { name: true } } }, take: 6 });
+    const unlocked = await isAgreementSigned(this.prisma, w.id); // vendor names stay hidden until the agreement is signed
+    const bookings = unlocked ? await this.prisma.weddingVendor.findMany({ where: { weddingId: w.id }, orderBy: { createdAt: 'asc' }, include: { vendor: { select: { name: true } } }, take: 6 }) : [];
     const journey = [
       { at: w.createdAt, title: 'Your wedding workspace was created', kind: 'start' },
       ...(signed ? [{ at: signed.signedAt, title: 'Planning agreement signed', kind: 'agreement' }] : []),
@@ -84,7 +87,7 @@ export class PortalClientService {
       ...bookings.map((b) => ({ at: b.createdAt, title: `${b.vendor.name} booked for ${b.category.toLowerCase().replace('_', ' ')}`, kind: 'vendor' })),
       ...events.map((e) => ({ at: e.date, title: e.name, kind: 'event' })),
     ].sort((a, b) => a.at.getTime() - b.at.getTime());
-    return { wedding: this.brief(w), couple: { brideName: w.couple.brideName, groomName: w.couple.groomName, email: w.couple.email, phone: w.couple.phone }, planner: w.planner, events, vendorCount: vendors, story: (storyRow?.value as { text?: string } | null)?.text ?? '', journey };
+    return { wedding: this.brief(w), couple: { brideName: w.couple.brideName, groomName: w.couple.groomName, email: w.couple.email, phone: w.couple.phone }, planner: w.planner, events, vendorCount: unlocked ? vendors : 0, vendorsLocked: !unlocked, story: (storyRow?.value as { text?: string } | null)?.text ?? '', journey };
   }
 
   async setStory(u: AuthUser, story: string) {
@@ -113,14 +116,42 @@ export class PortalClientService {
     return { wedding: this.brief(w), days: [...days.values()].sort((a, b) => a.date.localeCompare(b.date)) };
   }
 
+  /**
+   * Vendors & services. Agreement gate (decision 2): until the wedding's service agreement is SIGNED this returns
+   * `{ locked: true, reason: 'AGREEMENT_NOT_SIGNED', vendors: [], comparisons: [] }` (HTTP 200, not an error). Once signed it returns the booked
+   * vendors plus the shortlist / quotation comparison per RFQ round that the couple can choose from.
+   */
   async vendors(u: AuthUser, weddingId?: string) {
     const w = await this.resolveWedding(u, weddingId);
+    if (!(await isAgreementSigned(this.prisma, w.id))) return { wedding: { id: w.id, name: w.name }, ...LOCKED_STATE, vendors: [], comparisons: [] };
     const wvs = await this.prisma.weddingVendor.findMany({ where: { weddingId: w.id }, orderBy: { category: 'asc' }, include: { vendor: { select: { id: true, name: true, businessName: true, category: true, contactName: true, phone: true, email: true, rating: true } }, arrival: { select: { status: true, expectedAt: true } } } });
     const quotes = await this.prisma.quotation.findMany({ where: { id: { in: wvs.map((v) => v.quotationId).filter((x): x is string => !!x) } }, include: { items: { where: { included: true }, select: { name: true, description: true, quantity: true, unit: true } } } });
     return {
-      wedding: { id: w.id, name: w.name },
+      wedding: { id: w.id, name: w.name }, locked: false as const,
       vendors: wvs.map((v) => ({ id: v.id, category: v.category, vendor: v.vendor, amount: v.negotiatedAmount ?? v.contractAmount, notes: v.notes, arrival: v.arrival, menu: quotes.find((q) => q.id === v.quotationId)?.menu ?? null, services: quotes.find((q) => q.id === v.quotationId)?.items ?? [] })),
+      comparisons: await this.comparisons(w.id),
     };
+  }
+
+  /** Vendor comparison for the couple (gated by the caller): one entry per RFQ round that was actually sent. */
+  private async comparisons(weddingId: string) {
+    const reqs = await this.prisma.quotationRequest.findMany({ where: { weddingId, status: { not: 'DRAFT' }, quotation: { isNot: null } }, orderBy: { createdAt: 'asc' }, include: { vendor: { select: { id: true, name: true, businessName: true, rating: true } }, quotation: { include: { items: { where: { included: true }, select: { name: true, quantity: true, unit: true } } } } } });
+    const groups = new Map<string, typeof reqs>();
+    for (const r of reqs) groups.set(r.rfqGroup, [...(groups.get(r.rfqGroup) ?? []), r]);
+    const out = [];
+    for (const [rfqGroup, rs] of groups) {
+      const pick = await this.quotations.clientSelection(rfqGroup);
+      out.push({
+        rfqGroup, category: rs[0].category, title: rs[0].title, decided: rs.some((r) => r.status === 'SELECTED'), clientSelection: pick ? { quotationId: pick.quotationId, at: pick.at } : null,
+        options: rs.map((r) => ({ quotationId: r.quotation!.id, status: r.quotation!.status, vendor: r.vendor, menu: r.quotation!.menu, grandTotal: r.quotation!.grandTotal, pricePerPlate: r.quotation!.pricePerPlate, guestCapacity: r.quotation!.guestCapacity, validUntil: r.quotation!.validUntil, services: r.quotation!.items })),
+      });
+    }
+    return out;
+  }
+
+  /** The couple records which quotation they prefer. Gated by the agreement; the planner then awards the vendor. */
+  async selectVendor(u: AuthUser, quotationId: string, note?: string) {
+    return this.quotations.recordClientSelection(quotationId, note, u);
   }
 
   // ---- guests (reuses GuestsService so validation, stats, CSV rules and live broadcasts stay identical) ----
@@ -164,23 +195,31 @@ export class PortalClientService {
   }
 
   // ---- documents & contracts ----
-  private docWhere(ids: string[]): Prisma.DocumentWhereInput {
-    return { weddingId: { in: ids }, OR: [{ allowedRoles: { has: 'CLIENT' } }, { allowedRoles: { isEmpty: true }, category: { in: CLIENT_DOC_CATEGORIES } }] };
+  /** Floor plans are part of the vendor/venue layout phase: hidden until the agreement is signed (decision 2). */
+  private async docWhere(ids: string[]): Promise<Prisma.DocumentWhereInput> {
+    const signed = [...(await signedWeddingIds(this.prisma, ids))];
+    return { weddingId: { in: ids }, AND: [{ OR: [{ allowedRoles: { has: 'CLIENT' } }, { allowedRoles: { isEmpty: true }, category: { in: CLIENT_DOC_CATEGORIES } }] }, { NOT: { category: 'FLOOR_PLAN', weddingId: { notIn: signed } } }] };
   }
 
   async documents(u: AuthUser) {
     const w = await this.resolveWedding(u);
-    const rows = await this.prisma.document.findMany({ where: this.docWhere([w.id]), orderBy: { createdAt: 'desc' }, select: { id: true, name: true, category: true, mimeType: true, size: true, version: true, documentKey: true, createdAt: true } });
+    const signed = await isAgreementSigned(this.prisma, w.id);
+    const rows = await this.prisma.document.findMany({ where: await this.docWhere([w.id]), orderBy: { createdAt: 'desc' }, select: { id: true, name: true, category: true, mimeType: true, size: true, version: true, documentKey: true, createdAt: true } });
     const seen = new Set<string>();
     const documents = rows.filter((d) => (seen.has(d.documentKey) ? false : (seen.add(d.documentKey), true)));
     const agreements = await this.prisma.agreement.findMany({ where: { weddingId: w.id, status: { in: ['SENT', 'SIGNED'] } }, orderBy: { version: 'desc' }, select: { id: true, version: true, status: true, amount: true, paymentTerms: true, createdAt: true, signatures: { select: { id: true, signerName: true, signerRole: true, signedAt: true } } } });
-    return { wedding: { id: w.id, name: w.name }, documents, agreements };
+    const floorPlans = signed ? { locked: false as const, count: documents.filter((d) => d.category === 'FLOOR_PLAN').length } : { ...LOCKED_STATE };
+    return { wedding: { id: w.id, name: w.name }, documents, agreements, floorPlans };
   }
 
   async downloadDocument(u: AuthUser, id: string, inline: boolean) {
     const ids = await this.scope.requireClientWeddingIds(u);
-    const ok = await this.prisma.document.count({ where: { id, ...this.docWhere(ids) } });
-    if (!ok) throw new NotFoundException('Document not found');
+    const ok = await this.prisma.document.count({ where: { id, ...(await this.docWhere(ids)) } });
+    if (!ok) {
+      const fp = await this.prisma.document.findFirst({ where: { id, category: 'FLOOR_PLAN', weddingId: { in: ids } }, select: { id: true } });
+      if (fp) throw new ForbiddenException({ message: 'Floor plans unlock once the service agreement is signed', code: AGREEMENT_NOT_SIGNED, locked: true, reason: AGREEMENT_NOT_SIGNED });
+      throw new NotFoundException('Document not found');
+    }
     const { doc, stream } = await this.docs.stream(u, id);
     return new StreamableFile(stream, { type: doc.mimeType, disposition: `${inline ? 'inline' : 'attachment'}; filename="${encodeURIComponent(doc.name)}"` });
   }

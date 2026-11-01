@@ -1,7 +1,8 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Bell, ChevronDown, LogOut, MapPin, Menu, Plus, Search, Heart, MessagesSquare, Store, FileSpreadsheet, Wallet, Check } from 'lucide-react';
+import Link from 'next/link';
+import { Bell, ChevronDown, LogOut, Settings, MapPin, Menu, Plus, Search, Heart, MessagesSquare, Store, FileSpreadsheet, Wallet, Check } from 'lucide-react';
 import { useWedding } from '@/lib/wedding-context';
 import { useApi, asRows } from '@/hooks/use-api';
 import { api } from '@/lib/api';
@@ -10,6 +11,7 @@ import { useAuth, ROLE_LABEL } from '@/lib/auth';
 import { Avatar } from '@/components/ui/primitives';
 import { G } from '@/lib/permissions';
 import { config, DEMO_PASSWORD, DEMO_USERS } from '@/lib/config';
+import { SETTINGS_HREF, SETTINGS_LABEL } from '@/lib/nav';
 
 function useOutside(cb: () => void) {
   const ref = useRef<HTMLDivElement>(null);
@@ -96,7 +98,7 @@ const QUICK = [
   { l: 'New Wedding', i: Heart, h: '/weddings?new=1', r: G.CRM },
   { l: 'New Enquiry', i: MessagesSquare, h: '/enquiries?new=1', r: G.CRM },
   { l: 'New Vendor', i: Store, h: '/vendors?new=1', r: G.CRM },
-  { l: 'Request Quotations', i: FileSpreadsheet, h: '/quotations?new=1', r: G.CRM },
+  { l: 'Request Quotations', i: FileSpreadsheet, h: '/procurement?tab=rfqs&new=1', r: G.CRM },
   { l: 'Record Payment', i: Wallet, h: '/payments?new=1', r: G.FINANCE_WRITE },
 ] as const;
 
@@ -112,6 +114,11 @@ function ProfileMenu({ close }: { close: () => void }) {
   return (
     <div>
       <div className="px-3 py-2.5"><p className="text-sm font-medium truncate">{user?.name}</p><p className="text-xs text-ink-soft truncate">{user?.email}</p>{user && <p className="text-xs text-burgundy mt-0.5">{ROLE_LABEL[user.role]}</p>}</div>
+      {user && SETTINGS_HREF[user.role] && (
+        <div className="border-t border-line pt-1.5" data-testid="settings-link">
+          <Link href={SETTINGS_HREF[user.role]!} onClick={close} className="w-full px-3 py-2 rounded-lg hover:bg-surface-2 flex items-center gap-2 text-sm"><Settings className="h-4 w-4 text-burgundy" />{SETTINGS_LABEL[user.role] ?? 'Profile & preferences'}</Link>
+        </div>
+      )}
       {config.demoMode && (
         <div className="border-t border-line py-1.5" data-testid="role-switcher">
           <p className="px-3 py-1 text-[11px] font-medium uppercase tracking-wide text-ink-soft">Switch demo role</p>

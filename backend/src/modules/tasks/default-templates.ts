@@ -41,11 +41,24 @@ export const FULL_SERVICE_ITEMS: TemplateItemSeed[] = [
   t('post-close', 'Post-event closure & final bill', 'Reconcile vendor bills, bill extras and close the wedding.', 'FINAL_PREPARATION', -5, { ownerRole: 'FINANCE' }),
 ];
 
-/** Partial / Day-of package: execution-focused subset (still > 25 tasks). */
-const PARTIAL_KEYS = new Set(['venue-layout', 'design-theme', 'cater-headcount', 'photo-shotlist', 'guest-list', 'guest-invite', 'guest-rsvp', 'accom-allocate', 'transport-plan', 'transport-confirm', 'ent-sound', 'mehendi-plan', 'sangeet-plan', 'ceremony-plan', 'ceremony-baraat', 'reception-plan', 'final-timeline', 'final-practice', 'final-vendor-brief', 'final-advance', 'post-close', 'venue-shortlist', 'deco-mockup', 'photo-book', 'video-book', 'ent-book', 'cater-book']);
+export const FULL_SERVICE_TEMPLATE_NAME = 'Full-Service Wedding Checklist';
+/** Partial / Day-of management: execution-focused and deliberately smaller than the full set (no venue, decoration, catering or design sourcing). */
+export const PARTIAL_TEMPLATE_NAME = 'Partial / Day-of Scoped Checklist';
+/** @deprecated older databases still hold this 27-task template; it is no longer chosen automatically. */
+export const LEGACY_DAY_OF_TEMPLATE_NAME = 'Day-of Management Checklist';
+
+const PARTIAL_KEYS = new Set([
+  'venue-layout', 'cater-headcount', 'photo-shotlist', 'guest-rsvp', 'accom-allocate', 'transport-confirm', 'ent-sound',
+  'mehendi-plan', 'sangeet-plan', 'ceremony-plan', 'ceremony-baraat', 'reception-plan',
+  'final-timeline', 'final-practice', 'final-vendor-brief', 'final-advance', 'post-close',
+]);
+/** Day-of is a subtype of Partial (not a third package): only the event-day execution items of the Partial set. */
+export const DAY_OF_KEYS = new Set(['mehendi-plan', 'sangeet-plan', 'ceremony-plan', 'reception-plan', 'cater-headcount', 'transport-confirm', 'final-timeline', 'final-practice', 'final-vendor-brief', 'post-close']);
+
 export const PARTIAL_ITEMS: TemplateItemSeed[] = FULL_SERVICE_ITEMS.filter((i) => PARTIAL_KEYS.has(i.key)).map((i) => ({ ...i, dependsOnKey: i.dependsOnKey && PARTIAL_KEYS.has(i.dependsOnKey) ? i.dependsOnKey : undefined }));
+export const DAY_OF_ITEMS: TemplateItemSeed[] = PARTIAL_ITEMS.filter((i) => DAY_OF_KEYS.has(i.key)).map((i) => ({ ...i, dependsOnKey: i.dependsOnKey && DAY_OF_KEYS.has(i.dependsOnKey) ? i.dependsOnKey : undefined }));
 
 export const DEFAULT_TEMPLATES = [
-  { name: 'Full-Service Wedding Checklist', packageType: 'FULL_SERVICE', items: FULL_SERVICE_ITEMS },
-  { name: 'Day-of Management Checklist', packageType: 'PARTIAL', items: PARTIAL_ITEMS },
+  { name: FULL_SERVICE_TEMPLATE_NAME, packageType: 'FULL_SERVICE', items: FULL_SERVICE_ITEMS },
+  { name: PARTIAL_TEMPLATE_NAME, packageType: 'PARTIAL', items: PARTIAL_ITEMS },
 ] as const;

@@ -53,7 +53,7 @@ export class AdminUsersController {
 
   /** Only the Founder may create / modify Founder accounts. */
   private guardAdminRole(actor: AuthUser, ...roles: (Role | undefined)[]) {
-    if (actor.role !== Role.ADMIN && roles.includes(Role.ADMIN)) throw new ForbiddenException('Only the Founder can manage Founder / Administrator accounts');
+    if (actor.role !== Role.FOUNDER && roles.includes(Role.FOUNDER)) throw new ForbiddenException('Only the Founder can manage Founder / Director accounts');
   }
 
   private async user(id: string) {
@@ -107,7 +107,7 @@ export class AdminUsersController {
     this.guardAdminRole(actor, cur.role, dto.role);
     if (dto.role && dto.role !== cur.role) {
       if (id === actor.id) throw new BadRequestException('You cannot change your own role');
-      if (cur.role === Role.ADMIN) await this.assertOtherAdmin(id);
+      if (cur.role === Role.FOUNDER) await this.assertOtherAdmin(id);
       if ((dto.role === Role.VENDOR && !cur.vendorId) || (dto.role === Role.CLIENT && !cur.coupleId)) throw new BadRequestException('Vendor / client accounts need a linked vendor or couple; create a new account instead');
     }
     if (dto.email && dto.email.toLowerCase() !== cur.email && (await this.prisma.user.findUnique({ where: { email: dto.email.toLowerCase() } }))) throw new ConflictException('Email already registered');
@@ -122,7 +122,7 @@ export class AdminUsersController {
     const cur = await this.user(id);
     this.guardAdminRole(actor, cur.role);
     if (id === actor.id) throw new BadRequestException('You cannot deactivate your own account');
-    if (cur.role === Role.ADMIN) await this.assertOtherAdmin(id);
+    if (cur.role === Role.FOUNDER) await this.assertOtherAdmin(id);
     const u = await this.prisma.user.update({ where: { id }, data: { status: UserStatus.DISABLED }, select: SAFE });
     const r = await this.prisma.refreshToken.updateMany({ where: { userId: id, revokedAt: null }, data: { revokedAt: new Date() } });
     await this.audit.log({ actorId: actor.id, entity: 'User', entityId: id, action: 'deactivate', message: `Deactivated account ${u.name}`, meta: { sessionsRevoked: r.count } });
@@ -161,7 +161,7 @@ export class AdminUsersController {
   }
 
   private async assertOtherAdmin(excludeId: string) {
-    const n = await this.prisma.user.count({ where: { role: Role.ADMIN, status: UserStatus.ACTIVE, id: { not: excludeId } } });
-    if (n < 1) throw new BadRequestException('At least one active Founder / Administrator account must remain');
+    const n = await this.prisma.user.count({ where: { role: Role.FOUNDER, status: UserStatus.ACTIVE, id: { not: excludeId } } });
+    if (n < 1) throw new BadRequestException('At least one active Founder / Director account must remain');
   }
 }

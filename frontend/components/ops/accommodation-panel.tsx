@@ -189,9 +189,9 @@ export function AccommodationPanel() {
     { id: 'status', header: 'Status', cell: ({ row: { original: a } }) => <StatusBadge status={a.status} /> },
     { id: 'act', header: '', enableSorting: false, cell: ({ row: { original: a } }) => (
       <Can roles={G.EVENT_OPS}><div className="flex justify-end gap-1">
-        {a.status === 'RESERVED' && <button disabled={busy === a.id} className="btn-secondary btn-sm" onClick={() => act(a, 'checkin', `${a.guest?.name ?? 'Guest'} checked in`)}><LogIn className="h-3 w-3" />Check in</button>}
+        {a.status === 'CONFIRMED' && <button disabled={busy === a.id} className="btn-secondary btn-sm" onClick={() => act(a, 'checkin', `${a.guest?.name ?? 'Guest'} checked in`)}><LogIn className="h-3 w-3" />Check in</button>}
         {a.status === 'CHECKED_IN' && <button disabled={busy === a.id} className="btn-secondary btn-sm" onClick={() => act(a, 'checkout', `${a.guest?.name ?? 'Guest'} checked out`)}><LogOut className="h-3 w-3" />Check out</button>}
-        {(a.status === 'RESERVED' || a.status === 'CHECKED_IN') && <button disabled={busy === a.id} className="btn-ghost btn-sm !px-2" aria-label="Cancel allocation" title="Cancel" onClick={() => act(a, 'cancel', 'Allocation cancelled')}><UserX className="h-4 w-4" /></button>}
+        {(a.status === 'CONFIRMED' || a.status === 'CHECKED_IN') && <button disabled={busy === a.id} className="btn-ghost btn-sm !px-2" aria-label="Cancel allocation" title="Cancel" onClick={() => act(a, 'cancel', 'Allocation cancelled')}><UserX className="h-4 w-4" /></button>}
         {a.status !== 'CHECKED_IN' && <button className="btn-ghost btn-sm !px-2 text-danger" aria-label="Remove allocation" title="Remove" onClick={() => remove(a)}><Trash2 className="h-4 w-4" /></button>}
       </div></Can>
     ) },
@@ -216,7 +216,7 @@ export function AccommodationPanel() {
         <Card pad={false}>
           <div className="flex flex-wrap items-center gap-2 p-4">
             <SearchInput value={search} onChange={setSearch} placeholder="Search guest, family or room…" />
-            <Select className="!w-40" value={status} onChange={setStatus} options={['RESERVED', 'CHECKED_IN', 'CHECKED_OUT', 'CANCELLED']} placeholder="All statuses" />
+            <Select className="!w-40" value={status} onChange={setStatus} options={['PENDING', 'CONFIRMED', 'CHECKED_IN', 'CHECKED_OUT', 'CANCELLED']} placeholder="All statuses" />
             <Select className="!w-48" value={hotelFilter} onChange={setHotelFilter} options={(hotels.data ?? []).map((h) => ({ v: h.id, l: h.name }))} placeholder="All hotels" />
             {selected && <span className="text-xs text-ink-soft ml-auto">{selected.name}</span>}
           </div>

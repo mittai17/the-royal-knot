@@ -1,7 +1,7 @@
 import { PartialType } from '@nestjs/swagger';
 import { ApprovalStatus, PaymentMethod } from '@prisma/client';
 import { Type } from 'class-transformer';
-import { ArrayMinSize, IsArray, IsBoolean, IsDateString, IsEnum, IsNumber, IsOptional, IsPositive, IsString, IsUUID, Min, ValidateNested } from 'class-validator';
+import { MaxLength, MinLength, ArrayMinSize, IsArray, IsBoolean, IsDateString, IsEnum, IsNumber, IsOptional, IsPositive, IsString, IsUUID, Min, ValidateNested } from 'class-validator';
 import { PageQuery } from '../../common/pagination';
 
 export class CreateExpenseDto {
@@ -16,6 +16,7 @@ export class CreateExpenseDto {
   @IsOptional() @IsUUID() responsibleId?: string;
   @IsOptional() @IsBoolean() isTeamCost?: boolean;
 }
+export class VoidExpenseDto { @IsString() @MinLength(3) @MaxLength(500) reason: string; }
 export class UpdateExpenseDto extends PartialType(CreateExpenseDto) {}
 export class DecideExpenseDto { @IsEnum(ApprovalStatus) status: ApprovalStatus; }
 

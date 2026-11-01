@@ -39,9 +39,9 @@ export default function DashboardPage() {
 
   const to = d?.taskOverview;
   const donut = to ? [
-    { name: 'Completed', value: to.byStatus.COMPLETED ?? 0, c: COLORS.success },
-    { name: 'In Progress', value: (to.byStatus.IN_PROGRESS ?? 0) + (to.byStatus.UNDER_REVIEW ?? 0), c: COLORS.info },
-    { name: 'Pending', value: (to.byStatus.TO_PLAN ?? 0) + (to.byStatus.WAITING_FOR_VENDOR ?? 0) + (to.byStatus.BLOCKED ?? 0), c: COLORS.warning },
+    { name: 'Completed', value: to.byStatus.DONE ?? 0, c: COLORS.success },
+    { name: 'In Progress', value: (to.byStatus.IN_PROGRESS ?? 0), c: COLORS.info },
+    { name: 'Pending', value: (to.byStatus.TO_PLAN ?? 0) + (to.byStatus.BLOCKED ?? 0), c: COLORS.warning },
     { name: 'Overdue', value: to.overdue, c: COLORS.danger },
   ] : [];
   const rev = (d?.finance?.monthly ?? []).map((m) => ({ month: monthLabel(m.month), Contracted: toNum(m.revenue), Received: toNum(m.received), Outstanding: toNum(m.outstanding) }));
@@ -122,7 +122,7 @@ export default function DashboardPage() {
         <Card title="Live Vendor Status" action={<ViewAll href="/command-centre" />}>
           {!d || d.today.vendorStatus.length === 0 ? <EmptyState title="No vendor arrivals tracked" hint="Appears on event day." /> : (
             <ul className="space-y-3">{d.today.vendorStatus.slice(0, 5).map((v) => (
-              <li key={v.id} className="flex items-center gap-3 text-sm"><div className="min-w-0 flex-1"><p className="truncate">{v.vendor.name}</p><p className="text-xs text-ink-soft">{v.arrival ? fmtTime(v.arrival.actualAt ?? v.arrival.expectedAt) : '—'}{!!v.arrival?.delayMinutes && <span className="text-danger"> · +{v.arrival.delayMinutes}m</span>}</p></div><StatusBadge status={v.arrival?.status ?? 'NOT_ARRIVED'} /></li>
+              <li key={v.id} className="flex items-center gap-3 text-sm"><div className="min-w-0 flex-1"><p className="truncate">{v.vendor.name}</p><p className="text-xs text-ink-soft">{v.arrival ? fmtTime(v.arrival.actualAt ?? v.arrival.expectedAt) : '—'}{!!v.arrival?.delayMinutes && <span className="text-danger"> · +{v.arrival.delayMinutes}m</span>}</p></div><StatusBadge status={v.arrival?.status ?? 'EXPECTED'} /></li>
             ))}</ul>
           )}
         </Card>

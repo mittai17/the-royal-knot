@@ -14,7 +14,7 @@ import { PAYMENT_METHODS } from '@/lib/enums';
 import { fmtDateTime, humanize, inr, toNum, toInputDate } from '@/lib/utils';
 import type { Money } from '@/types';
 
-const STATUSES = ['DRAFT', 'SENT', 'PARTIALLY_PAID', 'PAID', 'OVERDUE', 'VOID'];
+const STATUSES = ['DRAFT', 'SENT', 'PARTIALLY_PAID', 'PAID', 'OVERDUE', 'CANCELLED'];
 interface Line { id?: string; description: string; quantity: Money; unitPrice: Money; taxRate: Money; total?: Money }
 interface Inv { id: string; invoiceNo: string; status: string; weddingId: string; milestoneId?: string | null; issueDate: string; dueDate?: string | null; subtotal: Money; taxTotal: Money; discount: Money; total: Money; amountPaid: Money; outstanding: Money; notes?: string | null; lastReminderAt?: string | null; wedding: { id: string; name: string }; lines: Line[] }
 interface Detail extends Inv { payments: { id: string; amount: Money; method: string; paidAt: string; receiptNo: string; reference?: string | null }[]; discountApproval?: { id: string; status: string } | null }

@@ -14,5 +14,8 @@ export class VendorBillsController {
   @Post(':id/verify') verify(@Param('id', ParseUUIDPipe) id: string, @Body() dto: BillNoteDto, @CurrentUser() u: AuthUser) { return this.svc.verify(id, dto.note, u); }
   @Post(':id/approve') approve(@Param('id', ParseUUIDPipe) id: string, @Body() dto: BillNoteDto, @CurrentUser() u: AuthUser) { return this.svc.approve(id, dto.note, u); }
   @Post(':id/reject') reject(@Param('id', ParseUUIDPipe) id: string, @Body() dto: RejectBillDto, @CurrentUser() u: AuthUser) { return this.svc.reject(id, dto.note, u); }
+  /** Voids an unpaid bill (REJECTED with a reason); posted bills are never deleted. */
+  @Post(':id/void') void(@Param('id', ParseUUIDPipe) id: string, @Body() dto: RejectBillDto, @CurrentUser() u: AuthUser) { return this.svc.void(id, dto.note, u); }
+  /** Direct payment (Finance up to the approval limit, Founder any amount). Larger amounts go through POST /vendor-payments. */
   @Post(':id/pay') pay(@Param('id', ParseUUIDPipe) id: string, @Body() dto: PayBillDto, @CurrentUser() u: AuthUser) { return this.svc.pay(id, dto, u); }
 }

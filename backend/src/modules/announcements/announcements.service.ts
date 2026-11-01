@@ -132,7 +132,7 @@ export class AnnouncementsService {
   async remove(u: AuthUser, id: string) {
     const a = await this.prisma.announcement.findUnique({ where: { id } });
     if (!a) throw new NotFoundException('Announcement not found');
-    if (a.authorId && a.authorId !== u.id && u.role !== Role.ADMIN) throw new ForbiddenException('Only the author or a founder can delete an announcement');
+    if (a.authorId && a.authorId !== u.id && u.role !== Role.FOUNDER) throw new ForbiddenException('Only the author or a founder can delete an announcement');
     await this.prisma.$transaction([this.prisma.notification.deleteMany({ where: { dedupeKey: key(id) } }), this.prisma.announcement.delete({ where: { id } })]);
     await this.audit.log({ actorId: u.id, weddingId: a.weddingId, entity: 'Announcement', entityId: id, action: 'delete', message: `Deleted "${a.title}"` });
     return { ok: true };

@@ -86,7 +86,7 @@ export function ArrivalsPanel({ vendors, baseDate, onChanged }: { vendors: Comma
   const track = (v: CommandVendor) => {
     const t = expected[v.id];
     if (!t) { notify.err(new Error('Pick the expected arrival time first')); return; }
-    void post(v, { status: 'NOT_ARRIVED', expectedAt: new Date(`${toInputDate(baseDate)}T${t}`).toISOString() });
+    void post(v, { status: 'EXPECTED', expectedAt: new Date(`${toInputDate(baseDate)}T${t}`).toISOString() });
   };
   const delayed = (v: CommandVendor) => { const m = window.prompt('Expected delay (minutes)?', '30'); if (m && Number(m) > 0) void post(v, { status: 'DELAYED', delayMinutes: Number(m) }); };
   const stats = { arrived: vendors.filter((v) => v.arrival && ['ARRIVED', 'COMPLETED'].includes(v.arrival.status)).length, total: vendors.length };
@@ -105,7 +105,7 @@ export function ArrivalsPanel({ vendors, baseDate, onChanged }: { vendors: Comma
                 {a ? (
                   <>
                     <div className="text-right space-y-1"><StatusBadge status={a.status} />{a.delayMinutes > 0 && <p className="text-[11px] text-danger font-medium">+{a.delayMinutes} min</p>}</div>
-                    {ops && (a.status === 'NOT_ARRIVED' || a.status === 'DELAYED') && <div className="flex gap-1"><button disabled={busy === v.id} className="btn-secondary btn-sm" onClick={() => post(v, { status: 'ARRIVED' })}><UserCheck className="h-3 w-3" />Arrived</button>{a.status === 'NOT_ARRIVED' && <button disabled={busy === v.id} className="btn-ghost btn-sm" onClick={() => delayed(v)}>Delayed</button>}</div>}
+                    {ops && (a.status === 'EXPECTED' || a.status === 'DELAYED') && <div className="flex gap-1"><button disabled={busy === v.id} className="btn-secondary btn-sm" onClick={() => post(v, { status: 'ARRIVED' })}><UserCheck className="h-3 w-3" />Arrived</button>{a.status === 'EXPECTED' && <button disabled={busy === v.id} className="btn-ghost btn-sm" onClick={() => delayed(v)}>Delayed</button>}</div>}
                     {ops && a.status === 'ARRIVED' && <button disabled={busy === v.id} className="btn-ghost btn-sm" onClick={() => post(v, { status: 'COMPLETED' })}>Complete</button>}
                   </>
                 ) : ops ? (
@@ -147,7 +147,7 @@ export function IncidentsPanel({ weddingId, incidents, onChanged }: { weddingId:
               <p className="text-xs text-ink-soft mt-1">{i.description}</p>
               {i.resolution && <p className="text-xs mt-1.5 text-success">Resolution: {i.resolution}</p>}
               <div className="flex items-center gap-2 mt-2.5 text-xs text-ink-soft"><span>{fmtTime(i.createdAt)}</span><span>·</span><span>{i.assignedTo?.name ?? 'Unassigned'}</span>
-                {ops && i.status !== 'RESOLVED' && <span className="ml-auto flex gap-1.5">{i.status === 'OPEN' && <button className="btn-secondary btn-sm" onClick={() => update(i, { status: 'IN_PROGRESS' })}>Take on</button>}<button className="btn-primary btn-sm" onClick={() => setRes(i)}>Resolve</button></span>}</div>
+                {ops && i.status !== 'RESOLVED' && <span className="ml-auto flex gap-1.5">{i.status === 'REPORTED' && <button className="btn-secondary btn-sm" onClick={() => update(i, { status: 'IN_PROGRESS' })}>Take on</button>}<button className="btn-primary btn-sm" onClick={() => setRes(i)}>Resolve</button></span>}</div>
             </li>
           ))}
         </ul>

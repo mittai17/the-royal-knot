@@ -7,7 +7,7 @@ import { AuthUser, CurrentUser, Roles } from '../../common/decorators';
 import { NotificationPrefsDto, PortalSettings, UpdateProfileDto } from '../../common/portal-settings';
 import { G } from '../../common/permissions';
 import { CreateGuestDto, GuestQuery, ImportGuestsDto, UpdateGuestDto } from '../guests/guests.dto';
-import { InviteDto, StoryDto } from './portal-client.dto';
+import { InviteDto, SelectVendorDto, StoryDto } from './portal-client.dto';
 import { PortalClientService } from './portal-client.service';
 
 class MilestoneIdQuery { @IsUUID() milestoneId: string; }
@@ -22,7 +22,10 @@ export class PortalClientController {
   @Patch('wedding/story') story(@CurrentUser() u: AuthUser, @Body() dto: StoryDto) { return this.svc.setStory(u, dto.story); }
   @Get('planner') planner(@CurrentUser() u: AuthUser) { return this.svc.planner(u); }
   @Get('schedule') schedule(@CurrentUser() u: AuthUser, @Query('weddingId') weddingId?: string) { return this.svc.schedule(u, weddingId); }
+  /** Locked until the agreement is signed: 200 { locked: true, reason: 'AGREEMENT_NOT_SIGNED', vendors: [], comparisons: [] }. */
   @Get('vendors') vendors(@CurrentUser() u: AuthUser, @Query('weddingId') weddingId?: string) { return this.svc.vendors(u, weddingId); }
+  /** The couple records the quotation they prefer (decision 4 client selection step). 409 AGREEMENT_NOT_SIGNED while locked. */
+  @Post('vendors/selection') selectVendor(@CurrentUser() u: AuthUser, @Body() dto: SelectVendorDto) { return this.svc.selectVendor(u, dto.quotationId, dto.note); }
 
   @Get('guests') guests(@CurrentUser() u: AuthUser, @Query() q: GuestQuery) { return this.svc.guestList(u, q); }
   @Get('guests/stats') guestStats(@CurrentUser() u: AuthUser) { return this.svc.guestStats(u); }

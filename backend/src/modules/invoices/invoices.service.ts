@@ -11,7 +11,7 @@ import { AuditService } from '../audit/audit.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PaymentsService } from '../payments/payments.service';
 import { CreateInvoiceDto, InvoicePaymentDto, InvoiceQuery, UpdateInvoiceDto } from './invoices.dto';
-import { computeInvoice, invoiceStatus, nextNumber, outstanding } from './invoice-math';
+import { computeInvoice, InvoiceLineInput, invoiceStatus, nextNumber, outstanding } from './invoice-math';
 
 const include = {
   wedding: { select: { id: true, name: true, couple: { select: { brideName: true, groomName: true, email: true } } } },
@@ -37,7 +37,7 @@ export class InvoicesService {
     return nextNumber('INV', last?.invoiceNo ?? null, year);
   }
 
-  private calc(lines: CreateInvoiceDto['lines'], discount?: number) {
+  private calc(lines: InvoiceLineInput[], discount?: Prisma.Decimal.Value) {
     try { return computeInvoice(lines, discount ?? 0); } catch (e) { throw new UnprocessableEntityException((e as Error).message); }
   }
 
@@ -54,7 +54,7 @@ export class InvoicesService {
     const [rows, total, all] = await Promise.all([
       this.prisma.clientInvoice.findMany({ where, include, orderBy: { createdAt: 'desc' }, skip: (q.page - 1) * q.pageSize, take: q.pageSize }),
       this.prisma.clientInvoice.count({ where }),
-      this.prisma.clientInvoice.findMany({ where: { status: { not: 'VOID' } }, select: { status: true, total: true, amountPaid: true, dueDate: true } }),
+      this.prisma.clientInvoice.findMany({ where: { status: { not: 'CANCELLED' } }, select: { status: true, total: true, amountPaid: true, dueDate: true } }),
     ]);
     const p = new Paginated(rows.map((r) => this.shape(r, now)), { page: q.page, pageSize: q.pageSize, total });
     (p.meta as Record<string, unknown>).summary = this.summarize(all, now);
@@ -76,7 +76,7 @@ export class InvoicesService {
     const i = await this.prisma.clientInvoice.findUnique({ where: { id }, include });
     if (!i) throw new NotFoundException('Invoice not found');
     const [payments, approval] = await Promise.all([
-      this.prisma.clientPayment.findMany({ where: { idempotencyKey: { startsWith: invoiceKeyPrefix(id) } }, orderBy: { paidAt: 'desc' }, include: { milestone: { select: { type: true } } } }),
+      this.prisma.clientPayment.findMany({ where: { OR: [{ invoiceId: id }, { idempotencyKey: { startsWith: invoiceKeyPrefix(id) } }] }, orderBy: { paidAt: 'desc' }, include: { milestone: { select: { type: true } } } }),
       this.approvals.latestFor('ClientInvoice', id, 'CLIENT_DISCOUNT'),
     ]);
     return { ...this.shape(i), payments, discountApproval: approval ? { id: approval.id, status: approval.status } : null };
@@ -102,7 +102,7 @@ export class InvoicesService {
       });
       await this.audit.log({ actorId: actor.id, weddingId: dto.weddingId, entity: 'ClientInvoice', entityId: created.id, action: 'create', message: `Created invoice ${invoiceNo} for ${inr(c.total)}`, meta: { lines: c.lines.length, discount: c.discount.toString() } }, tx);
       if (c.discount.gt(0)) {
-        await this.approvals.requestFor({ type: 'CLIENT_DISCOUNT', title: `Discount ${inr(c.discount)} on ${invoiceNo}`, description: `${created.wedding.name} · invoice total ${inr(c.total)}`, amount: c.discount, weddingId: dto.weddingId, entity: 'ClientInvoice', entityId: created.id }, actor, tx);
+        await this.approvals.requestFor({ type: 'CLIENT_DISCOUNT', title: `Discount ${inr(c.discount)} on ${invoiceNo}`, description: `${created.wedding.name} · invoice total ${inr(c.total)}`, reason: dto.notes ?? 'Client discount on invoice', amount: c.discount, weddingId: dto.weddingId, entity: 'ClientInvoice', entityId: created.id, sourceModule: 'invoices', sourceId: created.id }, actor, tx);
       }
       return created;
     });
@@ -114,8 +114,8 @@ export class InvoicesService {
     if (!cur) throw new NotFoundException('Invoice not found');
     if (cur.status !== 'DRAFT') throw new UnprocessableEntityException('Only draft invoices can be edited');
     await this.assertMilestone(cur.weddingId, dto.milestoneId);
-    const lines = dto.lines ?? cur.lines.map((l) => ({ description: l.description, quantity: Number(l.quantity), unitPrice: Number(l.unitPrice), taxRate: Number(l.taxRate) }));
-    const c = this.calc(lines, dto.discount ?? Number(cur.discount));
+    const lines = dto.lines ?? cur.lines.map((l) => ({ description: l.description, quantity: l.quantity, unitPrice: l.unitPrice, taxRate: l.taxRate }));
+    const c = this.calc(lines, dto.discount ?? cur.discount);
     const inv = await this.prisma.$transaction(async (tx) => {
       if (dto.lines) await tx.clientInvoiceLine.deleteMany({ where: { invoiceId: id } });
       const u = await tx.clientInvoice.update({
@@ -126,7 +126,7 @@ export class InvoicesService {
       await this.audit.log({ actorId: actor.id, weddingId: cur.weddingId, entity: 'ClientInvoice', entityId: id, action: 'update', message: `Edited draft invoice ${cur.invoiceNo} (${inr(c.total)})` }, tx);
       if (c.discount.gt(0) && !c.discount.eq(cur.discount)) {
         await tx.approval.updateMany({ where: { entity: 'ClientInvoice', entityId: id, type: 'CLIENT_DISCOUNT', status: { in: ['PENDING', 'IN_REVIEW'] } }, data: { status: 'CANCELLED', decisionNote: 'Superseded by an edit' } });
-        await this.approvals.requestFor({ type: 'CLIENT_DISCOUNT', title: `Discount ${inr(c.discount)} on ${cur.invoiceNo}`, amount: c.discount, weddingId: cur.weddingId, entity: 'ClientInvoice', entityId: id }, actor, tx);
+        await this.approvals.requestFor({ type: 'CLIENT_DISCOUNT', title: `Discount ${inr(c.discount)} on ${cur.invoiceNo}`, reason: dto.notes ?? 'Client discount on invoice', amount: c.discount, weddingId: cur.weddingId, entity: 'ClientInvoice', entityId: id, sourceModule: 'invoices', sourceId: id }, actor, tx);
       }
       return u;
     });
@@ -165,8 +165,8 @@ export class InvoicesService {
     const cur = await this.prisma.clientInvoice.findUnique({ where: { id } });
     if (!cur) throw new NotFoundException('Invoice not found');
     if (D(cur.amountPaid).gt(0)) throw new UnprocessableEntityException('An invoice with recorded payments cannot be voided');
-    if (cur.status === 'VOID') return this.get(id);
-    await this.prisma.clientInvoice.update({ where: { id }, data: { status: 'VOID' } });
+    if (cur.status === 'CANCELLED') return this.get(id);
+    await this.prisma.clientInvoice.update({ where: { id }, data: { status: 'CANCELLED' } });
     await this.audit.log({ actorId: actor.id, weddingId: cur.weddingId, entity: 'ClientInvoice', entityId: id, action: 'void', message: `Voided invoice ${cur.invoiceNo}${reason ? ` — ${reason}` : ''}` });
     return this.get(id);
   }
@@ -187,7 +187,7 @@ export class InvoicesService {
       const done = await tx.clientPayment.findUnique({ where: { idempotencyKey: key } });
       if (done) return { payment: done, duplicate: true } as Awaited<ReturnType<PaymentsService['record']>>;
       if (inv.status === 'DRAFT') throw new UnprocessableEntityException('Send the invoice before recording payments');
-      if (inv.status === 'VOID') throw new UnprocessableEntityException('This invoice is void');
+      if (inv.status === 'CANCELLED') throw new UnprocessableEntityException('This invoice is void');
       const due = outstanding(inv.total, inv.amountPaid);
       if (D(dto.amount).gt(due)) throw new UnprocessableEntityException(`Amount exceeds the outstanding balance of ${inr(due)} on ${inv.invoiceNo}`);
       let type = dto.milestone;
@@ -195,6 +195,7 @@ export class InvoicesService {
       if (!type) throw new UnprocessableEntityException('Choose which payment milestone this payment counts toward (the invoice is not linked to one)');
       const res = await this.payments.record({ weddingId: inv.weddingId, milestone: type, amount: dto.amount, method: dto.method, reference: dto.reference ?? inv.invoiceNo, paidAt: dto.paidAt, idempotencyKey: key }, actor);
       if (res.duplicate) return res;
+      await tx.clientPayment.update({ where: { id: res.payment.id }, data: { invoiceId: id } });
       const paid = money(D(inv.amountPaid).plus(dto.amount));
       const status = invoiceStatus({ status: 'SENT', total: inv.total, amountPaid: paid, dueDate: inv.dueDate });
       await tx.clientInvoice.update({ where: { id }, data: { amountPaid: paid, status: status === 'OVERDUE' ? (paid.gt(0) ? 'PARTIALLY_PAID' : 'SENT') : status } });

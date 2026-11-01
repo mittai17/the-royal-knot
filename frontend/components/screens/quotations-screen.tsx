@@ -14,7 +14,7 @@ function Inner() {
   const params = useSearchParams();
   const { selected } = useWedding();
   const [creating, setCreating] = useState(params.get('new') === '1');
-  const close = () => { setCreating(false); if (params.get('new')) router.replace('/quotations'); };
+  const close = () => { setCreating(false); if (params.get('new')) router.replace('/procurement?tab=rfqs'); };
   return (
     <>
       <PageHeader title="Quotations" subtitle={selected ? `Vendor requests for ${selected.name}` : 'Request and compare vendor quotations'} actions={<Can roles={G.CRM}><button className="btn-primary" onClick={() => setCreating(true)}><Plus className="h-4 w-4" />Request quotations</button></Can>} />
@@ -22,4 +22,4 @@ function Inner() {
     </>
   );
 }
-export default function QuotationsPage() { return <Suspense><Inner /></Suspense>; }
+export function QuotationsScreen() { return <Suspense><Inner /></Suspense>; }

@@ -89,8 +89,10 @@ export class TransportService {
   }
 
   // ---------------------------------------------------------------- trips
-  async trips(q: TripQuery) {
+  async trips(q: TripQuery, user?: AuthUser) {
+    if (user && q.weddingId) await this.scope.assertWeddingAccess(user, q.weddingId);
     const where: Prisma.TripWhereInput = {
+      ...(user && this.scope.isScoped(user) ? { wedding: this.scope.weddingWhere(user) } : {}),
       ...(q.weddingId ? { weddingId: q.weddingId } : {}), ...(q.status ? { status: q.status } : {}), ...(q.driverId ? { driverId: q.driverId } : {}), ...(q.vehicleId ? { vehicleId: q.vehicleId } : {}),
       ...(q.from || q.to ? { scheduledAt: { ...(q.from ? { gte: new Date(q.from) } : {}), ...(q.to ? { lte: new Date(q.to) } : {}) } } : {}),
     };
@@ -116,6 +118,7 @@ export class TransportService {
   }
 
   async createTrip(dto: CreateTripDto, actor: AuthUser) {
+    await this.scope.assertWeddingAccess(actor, dto.weddingId);
     const t = await this.prisma.$transaction(async (tx) => {
       if (!(await tx.wedding.count({ where: { id: dto.weddingId } }))) throw new NotFoundException('Wedding not found');
       await this.assertResources(tx, dto.vehicleId, dto.driverId);
@@ -130,6 +133,7 @@ export class TransportService {
   async updateTrip(id: string, dto: UpdateTripDto, actor: AuthUser) {
     const prev = await this.prisma.trip.findUnique({ where: { id }, include: { passengers: true } });
     if (!prev) throw new NotFoundException('Trip not found');
+    await this.scope.assertWeddingAccess(actor, prev.weddingId);
     if (prev.status === 'COMPLETED') throw new BadRequestException('A completed trip cannot be edited');
     const t = await this.prisma.$transaction(async (tx) => {
       const vehicleId = dto.vehicleId !== undefined ? dto.vehicleId : prev.vehicleId, driverId = dto.driverId !== undefined ? dto.driverId : prev.driverId;
@@ -151,6 +155,7 @@ export class TransportService {
   async setTripStatus(id: string, status: TripStatus, actor: AuthUser) {
     const prev = await this.prisma.trip.findUnique({ where: { id } });
     if (!prev) throw new NotFoundException('Trip not found');
+    await this.scope.assertWeddingAccess(actor, prev.weddingId);
     if (prev.status === status) return this.prisma.trip.findUniqueOrThrow({ where: { id }, include: tripInclude });
     if (!canMoveTrip(prev.status, status)) throw new BadRequestException(`A ${prev.status.toLowerCase().replace('_', ' ')} trip cannot become ${status.toLowerCase().replace('_', ' ')}`);
     const now = new Date();
@@ -171,6 +176,7 @@ export class TransportService {
   async deleteTrip(id: string, actor: AuthUser) {
     const t = await this.prisma.trip.findUnique({ where: { id } });
     if (!t) throw new NotFoundException('Trip not found');
+    await this.scope.assertWeddingAccess(actor, t.weddingId);
     if (t.status === 'IN_PROGRESS') throw new BadRequestException('Cannot delete a trip in progress');
     await this.prisma.$transaction([this.prisma.guestTransport.updateMany({ where: { tripId: id, status: { in: ['ASSIGNED', 'PICKED_UP'] } }, data: { status: 'PENDING' } }), this.prisma.trip.delete({ where: { id } })]);
     await this.audit.log({ actorId: actor.id, weddingId: t.weddingId, entity: 'Trip', entityId: id, action: 'delete', message: `Removed trip "${t.title}"` });
@@ -179,9 +185,11 @@ export class TransportService {
   }
 
   // ---------------------------------------------------------------- guest pickups / drops
-  guestTransport(q: GuestTransportQuery) {
+  async guestTransport(q: GuestTransportQuery, user?: AuthUser) {
+    if (user && q.weddingId) await this.scope.assertWeddingAccess(user, q.weddingId);
     return this.prisma.guestTransport.findMany({
       where: {
+        ...(user && this.scope.isScoped(user) ? { guest: { wedding: this.scope.weddingWhere(user) } } : {}),
         ...(q.weddingId ? { guest: { weddingId: q.weddingId } } : {}), ...(q.kind ? { kind: q.kind } : {}), ...(q.status ? { status: q.status } : {}), ...(q.tripId ? { tripId: q.tripId } : {}), ...(q.unassigned ? { tripId: null, status: { not: 'CANCELLED' } } : {}),
         ...(q.search ? { OR: [{ guest: { name: { contains: q.search, mode: 'insensitive' } } }, { flightOrTrain: { contains: q.search, mode: 'insensitive' } }] } : {}),
       },
@@ -202,6 +210,7 @@ export class TransportService {
     const g = await this.prisma.$transaction(async (tx) => {
       const guest = await tx.guest.findUnique({ where: { id: dto.guestId } });
       if (!guest) throw new NotFoundException('Guest not found');
+      await this.scope.assertWeddingAccess(actor, guest.weddingId);
       const passengers = dto.passengers ?? 1 + (guest.plusOnes ?? 0);
       if (dto.tripId) { const trip = await this.assertSeats(tx, dto.tripId, passengers); if (trip.weddingId !== guest.weddingId) throw new BadRequestException('Trip belongs to a different wedding'); }
       return tx.guestTransport.create({ data: { guestId: dto.guestId, kind: dto.kind ?? 'PICKUP', flightOrTrain: dto.flightOrTrain, arrivalAt: dto.arrivalAt ? new Date(dto.arrivalAt) : undefined, passengers, notes: dto.notes, tripId: dto.tripId, status: dto.tripId ? 'ASSIGNED' : 'PENDING' }, include: gtInclude });
@@ -213,6 +222,7 @@ export class TransportService {
   async updateGuestTransport(id: string, dto: UpdateGuestTransportDto, actor: AuthUser) {
     const prev = await this.prisma.guestTransport.findUnique({ where: { id }, include: { guest: true } });
     if (!prev) throw new NotFoundException('Booking not found');
+    await this.scope.assertWeddingAccess(actor, prev.guest.weddingId);
     const g = await this.prisma.$transaction(async (tx) => {
       const passengers = dto.passengers ?? prev.passengers;
       let status = dto.status;
@@ -234,13 +244,15 @@ export class TransportService {
   async deleteGuestTransport(id: string, actor: AuthUser) {
     const prev = await this.prisma.guestTransport.findUnique({ where: { id }, include: { guest: true } });
     if (!prev) throw new NotFoundException('Booking not found');
+    await this.scope.assertWeddingAccess(actor, prev.guest.weddingId);
     await this.prisma.guestTransport.delete({ where: { id } });
     await this.audit.log({ actorId: actor.id, weddingId: prev.guest.weddingId, entity: 'GuestTransport', entityId: id, action: 'delete', message: `Removed transport for ${prev.guest.name}` });
     this.rt.toWedding(prev.guest.weddingId, 'transport.updated', { guestTransportId: id, deleted: true });
     return { ok: true };
   }
 
-  async stats(q: TransportStatsQuery) {
+  async stats(q: TransportStatsQuery, user?: AuthUser) {
+    if (user && q.weddingId) await this.scope.assertWeddingAccess(user, q.weddingId);
     const gw: Prisma.GuestTransportWhereInput = q.weddingId ? { guest: { weddingId: q.weddingId } } : {};
     const tw: Prisma.TripWhereInput = q.weddingId ? { weddingId: q.weddingId } : {};
     const [vehicles, drivers, trips, gts, unassigned] = await Promise.all([

@@ -21,7 +21,7 @@ describe('event ops helpers', () => {
   });
   it('arrivalBucket maps vendor arrival states', () => {
     expect(arrivalBucket(null)).toBe('pending');
-    expect(arrivalBucket({ status: 'NOT_ARRIVED' })).toBe('pending');
+    expect(arrivalBucket({ status: 'EXPECTED' })).toBe('pending');
     expect(arrivalBucket({ status: 'ARRIVED' })).toBe('arrived');
     expect(arrivalBucket({ status: 'DELAYED' })).toBe('delayed');
     expect(arrivalBucket({ status: 'COMPLETED' })).toBe('completed');

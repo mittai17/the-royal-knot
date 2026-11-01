@@ -1,9 +1,12 @@
 'use client';
-import { useState, type ReactNode } from 'react';
-import { Download, Loader2 } from 'lucide-react';
+import { useCallback, useState, type ReactNode } from 'react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { Download, Loader2, ShieldAlert, AlertTriangle } from 'lucide-react';
 import { Card, EmptyState, ErrorState, TableSkeleton, Pagination } from '@/components/ui/primitives';
 import { useApi, asRows } from '@/hooks/use-api';
-import { apiUrl } from '@/lib/api';
+import { ApiError, apiUrl } from '@/lib/api';
+import { notify } from '@/lib/toast';
+import { Segmented } from '@/components/shared/form-bits';
 import { fmtDate, inr, toNum } from '@/lib/utils';
 import type { ApiMeta } from '@/lib/api';
 
@@ -59,3 +62,80 @@ export function BusyButton({ busy, className = 'btn-primary', children, ...rest 
 export const Money = ({ v, negative }: { v: unknown; negative?: boolean }) => <span className={`tabular-nums ${negative ?? toNum(v) < 0 ? 'text-danger' : ''}`}>{inr(v)}</span>;
 export const D = ({ v }: { v?: string | null }) => <span className="whitespace-nowrap">{fmtDate(v)}</span>;
 export const Muted = ({ children }: { children: ReactNode }) => <span className="block text-xs text-ink-soft">{children}</span>;
+
+
+/** Tab state kept in `?tab=` (or another param). Unknown values fall back to the default. Switching keeps the other query params except `page`-like state owned by panels. */
+export function useTabParam<T extends string>(allowed: readonly T[], fallback: T, param = 'tab'): [T, (t: T) => void] {
+  const sp = useSearchParams();
+  const router = useRouter();
+  const path = usePathname();
+  const raw = sp.get(param) as T | null;
+  const tab = raw && allowed.includes(raw) ? raw : fallback;
+  const set = useCallback((t: T) => {
+    const q = new URLSearchParams(sp.toString());
+    if (t === fallback) q.delete(param); else q.set(param, t);
+    const s = q.toString();
+    router.replace(s ? `${path}?${s}` : path, { scroll: false });
+  }, [sp, router, path, fallback, param]);
+  return [tab, set];
+}
+
+/** Reads a single query param (e.g. ?weddingId=, ?billId=) without owning navigation. */
+export function useQueryParam(name: string): string | null { return useSearchParams().get(name); }
+
+export function TabBar<T extends string>({ value, onChange, tabs }: { value: T; onChange: (v: T) => void; tabs: readonly { v: T; l: string }[] }) {
+  return <div className="mb-5 max-w-full overflow-x-auto"><Segmented value={value} onChange={onChange} options={tabs} /></div>;
+}
+
+/** Maker-checker rules come back as 403/409 with a message starting "Maker-checker:". */
+export const isMakerChecker = (e: unknown) => e instanceof Error && /^maker-checker/i.test(e.message);
+export function friendlyError(e: unknown): string {
+  if (!(e instanceof Error)) return 'Something went wrong';
+  if (isMakerChecker(e)) return e.message.replace(/^maker-checker:\s*/i, '').replace(/^./, (c) => c.toUpperCase());
+  if (e instanceof ApiError && e.status === 403) return `Not allowed: ${e.message}`;
+  return e.message;
+}
+
+/** Inline banner for a failed action. Maker-checker rejections get their own wording so people understand it is a control, not a bug. */
+export function InlineError({ error }: { error: unknown }) {
+  if (!error) return null;
+  const mc = isMakerChecker(error);
+  return (
+    <div role="alert" className={`flex gap-2.5 rounded-xl px-3.5 py-3 text-sm ${mc ? 'bg-warning-soft text-[#8A5A12]' : 'bg-danger-soft text-danger'}`}>
+      {mc ? <ShieldAlert className="h-4 w-4 mt-0.5 shrink-0" /> : <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />}
+      <div><p className="font-medium">{mc ? 'Maker-checker control' : 'Could not complete that'}</p><p>{friendlyError(error)}</p></div>
+    </div>
+  );
+}
+
+/**
+ * Runs one API action at a time: tracks which action is busy, keeps the last error for an inline banner and fires the success toast only after the API call resolved.
+ * `run` resolves to the API result (or undefined on failure) so callers can branch on the payload.
+ */
+export function useRunner() {
+  const [busy, setBusy] = useState('');
+  const [error, setError] = useState<unknown>(null);
+  const run = useCallback(async <T,>(label: string, fn: () => Promise<T>, ok?: string | ((r: T) => string | null)): Promise<T | undefined> => {
+    setBusy(label); setError(null);
+    try {
+      const r = await fn();
+      const msg = typeof ok === 'function' ? ok(r) : ok;
+      if (msg) notify.ok(msg);
+      return r;
+    } catch (e) { setError(e); if (!isMakerChecker(e)) notify.err(e); return undefined; } finally { setBusy(''); }
+  }, []);
+  return { busy, error, setError, run };
+}
+
+/** Client-side CSV download for views that merge several API calls. */
+export function downloadCsv(name: string, head: string[], rows: (string | number | null | undefined)[][]) {
+  const esc = (v: unknown) => { const t = v == null ? '' : String(v); return /[",\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; };
+  const body = [head, ...rows].map((r) => r.map(esc).join(',')).join('\r\n');
+  const url = URL.createObjectURL(new Blob([body], { type: 'text/csv;charset=utf-8' }));
+  const a = document.createElement('a');
+  a.href = url; a.download = `${name}-${new Date().toISOString().slice(0, 10)}.csv`; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/** Wedding picker used by tab views that need one wedding (milestone plan, extra charges, statements). */
+export const NO_WEDDING = 'Select a wedding to see this view.';

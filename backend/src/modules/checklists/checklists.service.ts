@@ -17,20 +17,27 @@ export class ChecklistsService {
 
   private shape<T extends { items: { done: boolean }[] }>(c: T) { return { ...c, progress: progress(c.items) }; }
 
-  async list(q: ChecklistQuery) {
+  /** Staff only reach checklists of weddings they are assigned to (wedding-less checklists stay shared). */
+  private async access(user: AuthUser | undefined, weddingId: string | null | undefined) {
+    if (user && weddingId) await this.scope.assertWeddingAccess(user, weddingId);
+  }
+  async list(q: ChecklistQuery, user?: AuthUser) {
+    await this.access(user, q.weddingId);
     const rows = await this.prisma.checklist.findMany({
-      where: { ...(q.weddingId ? { weddingId: q.weddingId } : {}), ...(q.clientVisible !== undefined ? { clientVisible: q.clientVisible } : {}), ...(q.search ? { name: { contains: q.search, mode: 'insensitive' } } : {}) },
+      where: { ...(user && this.scope.isScoped(user) ? { OR: [{ weddingId: null }, { wedding: this.scope.weddingWhere(user) }] } : {}), ...(q.weddingId ? { weddingId: q.weddingId } : {}), ...(q.clientVisible !== undefined ? { clientVisible: q.clientVisible } : {}), ...(q.search ? { name: { contains: q.search, mode: 'insensitive' } } : {}) },
       orderBy: { createdAt: 'desc' }, take: 300, include: { items: { orderBy: itemOrder }, wedding: { select: { id: true, name: true } } },
     });
     return rows.map((c) => this.shape(c));
   }
-  async get(id: string) {
+  async get(id: string, user?: AuthUser) {
     const c = await this.prisma.checklist.findUnique({ where: { id }, include: { items: { orderBy: itemOrder }, wedding: { select: { id: true, name: true } } } });
     if (!c) throw new NotFoundException('Checklist not found');
+    await this.access(user, c.weddingId);
     return this.shape(c);
   }
   async create(dto: CreateChecklistDto, actor: AuthUser) {
     if (dto.weddingId && !(await this.prisma.wedding.count({ where: { id: dto.weddingId } }))) throw new NotFoundException('Wedding not found');
+    await this.access(actor, dto.weddingId);
     const c = await this.prisma.checklist.create({
       data: { name: dto.name.trim(), weddingId: dto.weddingId, ownerId: actor.id, clientVisible: dto.clientVisible ?? false, items: { create: (dto.items ?? []).map((i, n) => ({ title: i.title.trim(), dueDate: i.dueDate ? new Date(i.dueDate) : undefined, sortOrder: n })) } },
       include: { items: { orderBy: itemOrder }, wedding: { select: { id: true, name: true } } },
@@ -40,12 +47,14 @@ export class ChecklistsService {
     return this.shape(c);
   }
   async update(id: string, dto: UpdateChecklistDto, actor: AuthUser) {
+    await this.get(id, actor);
     const c = await this.prisma.checklist.update({ where: { id }, data: dto, include: { items: { orderBy: itemOrder }, wedding: { select: { id: true, name: true } } } }).catch(() => { throw new NotFoundException('Checklist not found'); });
     await this.audit.log({ actorId: actor.id, weddingId: c.weddingId, entity: 'Checklist', entityId: id, action: 'update', message: `Updated checklist "${c.name}"` });
     this.emit(c.weddingId, id);
     return this.shape(c);
   }
   async remove(id: string, actor: AuthUser) {
+    await this.get(id, actor);
     const c = await this.prisma.checklist.delete({ where: { id } }).catch(() => { throw new NotFoundException('Checklist not found'); });
     await this.audit.log({ actorId: actor.id, weddingId: c.weddingId, entity: 'Checklist', entityId: id, action: 'delete', message: `Deleted checklist "${c.name}"` });
     this.emit(c.weddingId, id);
@@ -56,6 +65,7 @@ export class ChecklistsService {
   async addItem(checklistId: string, dto: CreateItemDto, actor: AuthUser) {
     const c = await this.prisma.checklist.findUnique({ where: { id: checklistId }, include: { items: { select: { sortOrder: true } } } });
     if (!c) throw new NotFoundException('Checklist not found');
+    await this.access(actor, c.weddingId);
     const item = await this.prisma.checklistItem.create({ data: { checklistId, title: dto.title.trim(), dueDate: dto.dueDate ? new Date(dto.dueDate) : undefined, sortOrder: Math.max(-1, ...c.items.map((i) => i.sortOrder)) + 1 } });
     await this.audit.log({ actorId: actor.id, weddingId: c.weddingId, entity: 'Checklist', entityId: checklistId, action: 'add_item', message: `Added "${item.title}" to "${c.name}"` });
     this.emit(c.weddingId, checklistId);
@@ -64,6 +74,7 @@ export class ChecklistsService {
   async updateItem(id: string, dto: UpdateItemDto, actor: AuthUser) {
     const prev = await this.prisma.checklistItem.findUnique({ where: { id }, include: { checklist: true } });
     if (!prev) throw new NotFoundException('Item not found');
+    await this.access(actor, prev.checklist.weddingId);
     const { done, dueDate, title, ...rest } = dto;
     const item = await this.prisma.checklistItem.update({ where: { id }, data: { ...rest, ...(title !== undefined ? { title: title.trim() } : {}), ...(dueDate !== undefined ? { dueDate: new Date(dueDate) } : {}), ...(done !== undefined ? { done, doneAt: done ? new Date() : null, doneById: done ? actor.id : null } : {}) } });
     await this.audit.log({ actorId: actor.id, weddingId: prev.checklist.weddingId, entity: 'Checklist', entityId: prev.checklistId, action: done === undefined ? 'update_item' : done ? 'tick' : 'untick', message: done === undefined ? `Edited "${item.title}"` : `${done ? 'Ticked' : 'Unticked'} "${item.title}" in "${prev.checklist.name}"` });
@@ -73,6 +84,7 @@ export class ChecklistsService {
   async removeItem(id: string, actor: AuthUser) {
     const prev = await this.prisma.checklistItem.findUnique({ where: { id }, include: { checklist: true } });
     if (!prev) throw new NotFoundException('Item not found');
+    await this.access(actor, prev.checklist.weddingId);
     await this.prisma.checklistItem.delete({ where: { id } });
     await this.audit.log({ actorId: actor.id, weddingId: prev.checklist.weddingId, entity: 'Checklist', entityId: prev.checklistId, action: 'remove_item', message: `Removed "${prev.title}" from "${prev.checklist.name}"` });
     this.emit(prev.checklist.weddingId, prev.checklistId);
@@ -98,6 +110,7 @@ export class ChecklistsService {
   async createReport(dto: CreateReportDto, actor: AuthUser) {
     const w = await this.prisma.wedding.findUnique({ where: { id: dto.weddingId }, select: { id: true, name: true } });
     if (!w) throw new NotFoundException('Wedding not found');
+    await this.access(actor, w.id);
     if (dto.taskId && !(await this.prisma.weddingTask.count({ where: { id: dto.taskId, weddingId: dto.weddingId } }))) throw new BadRequestException('Task does not belong to this wedding');
     if (dto.functionId && !(await this.prisma.weddingEvent.count({ where: { id: dto.functionId, weddingId: dto.weddingId } }))) throw new BadRequestException('Function does not belong to this wedding');
     if (dto.photoIds?.length && (await this.prisma.document.count({ where: { id: { in: dto.photoIds }, weddingId: dto.weddingId } })) !== dto.photoIds.length) throw new BadRequestException('Some attached photos were not found for this wedding');
@@ -109,8 +122,10 @@ export class ChecklistsService {
     return { id: r.id, createdAt: r.createdAt, weddingId: r.weddingId, wedding: r.wedding ?? null, author: r.actor ?? null, ...((r.meta ?? {}) as Record<string, unknown>) };
   }
   async reports(q: ReportQuery, user: AuthUser) {
+    await this.access(user, q.weddingId);
+    const ids = await this.scope.weddingIds(user);
     const rows = await this.prisma.activityLog.findMany({
-      where: { entity: 'FieldReport', ...(q.weddingId ? { weddingId: q.weddingId } : {}), ...(q.type ? { action: q.type.toLowerCase() } : {}), ...(q.mine ? { actorId: user.id } : {}) },
+      where: { entity: 'FieldReport', ...(ids ? { weddingId: { in: ids } } : {}), ...(q.weddingId ? { weddingId: q.weddingId } : {}), ...(q.type ? { action: q.type.toLowerCase() } : {}), ...(q.mine ? { actorId: user.id } : {}) },
       orderBy: { createdAt: 'desc' }, take: q.limit ?? 50, include: { actor: { select: { id: true, name: true } }, wedding: { select: { id: true, name: true } } },
     });
     const photoIds = [...new Set(rows.flatMap((r) => ((r.meta as { photoIds?: string[] } | null)?.photoIds ?? [])))];
@@ -124,8 +139,8 @@ export class ChecklistsService {
     const [todayCount, mine, openTasks, overdue] = await Promise.all([
       this.prisma.activityLog.count({ where: { entity: 'FieldReport', createdAt: { gte: today } } }),
       this.prisma.activityLog.count({ where: { entity: 'FieldReport', actorId: user.id } }),
-      this.prisma.weddingTask.count({ where: { ownerId: user.id, status: { not: 'COMPLETED' } } }),
-      this.prisma.weddingTask.count({ where: { ownerId: user.id, status: { not: 'COMPLETED' }, dueDate: { lt: new Date() } } }),
+      this.prisma.weddingTask.count({ where: { ownerId: user.id, status: { not: 'DONE' } } }),
+      this.prisma.weddingTask.count({ where: { ownerId: user.id, status: { not: 'DONE' }, dueDate: { lt: new Date() } } }),
     ]);
     return { updatesToday: todayCount, myUpdates: mine, myOpenTasks: openTasks, myOverdueTasks: overdue };
   }
@@ -133,6 +148,7 @@ export class ChecklistsService {
     if (!file) throw new BadRequestException('Attach an image (field "file")');
     if (!/^image\//.test(file.mimetype)) throw new BadRequestException('Only image files can be attached as photos');
     if (!(await this.prisma.wedding.count({ where: { id: weddingId } }))) throw new NotFoundException('Wedding not found');
+    await this.access(actor, weddingId);
     const doc = await this.docs.save({ weddingId, name: file.originalname, category: DocumentCategory.PHOTO, buffer: file.buffer, mime: file.mimetype, uploadedById: actor.id, allowedRoles: [Role.PLANNER, Role.EVENT_MANAGER, Role.OPERATIONS] });
     return { id: doc.id, name: doc.name, mimeType: doc.mimeType, size: doc.size };
   }

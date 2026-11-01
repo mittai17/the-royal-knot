@@ -14,7 +14,7 @@ import { CreateThreadDto } from './messaging.dto';
 
 const NOTHING = '00000000-0000-0000-0000-000000000000';
 const CHANNEL_LINK: Record<Role, string> = {
-  ADMIN: '/communications', PLANNER: '/communications', EVENT_MANAGER: '/communications', FINANCE: '/communications', OPERATIONS: '/communications',
+  FOUNDER: '/communications', PLANNER: '/communications', EVENT_MANAGER: '/communications', FINANCE: '/communications', OPERATIONS: '/communications',
   CLIENT: '/client-portal/chat', VENDOR: '/vendor-portal/messages', SYSADMIN: '/communications',
 };
 
@@ -95,8 +95,8 @@ export class MessagingService {
 
   /** Staff-only: open a conversation. CLIENT / VENDOR channels are for planners and event managers (and the founder). */
   async createThread(u: AuthUser, dto: CreateThreadDto) {
-    if ((dto.channel === ThreadChannel.CLIENT || dto.channel === ThreadChannel.VENDOR) && !([Role.PLANNER, Role.EVENT_MANAGER, Role.ADMIN] as Role[]).includes(u.role)) throw new ForbiddenException('Your role cannot start client or vendor conversations');
-    if (dto.channel === ThreadChannel.PLANNER && !([Role.PLANNER, Role.FINANCE, Role.ADMIN] as Role[]).includes(u.role)) throw new ForbiddenException('Planner/finance conversations are for planners and finance');
+    if ((dto.channel === ThreadChannel.CLIENT || dto.channel === ThreadChannel.VENDOR) && !([Role.PLANNER, Role.EVENT_MANAGER, Role.FOUNDER] as Role[]).includes(u.role)) throw new ForbiddenException('Your role cannot start client or vendor conversations');
+    if (dto.channel === ThreadChannel.PLANNER && !([Role.PLANNER, Role.FINANCE, Role.FOUNDER] as Role[]).includes(u.role)) throw new ForbiddenException('Planner/finance conversations are for planners and finance');
     const memberIds = new Set<string>([u.id, ...(dto.memberIds ?? [])]);
     let weddingId: string | null = null;
     let vendorId: string | null = null;
@@ -173,7 +173,7 @@ export class MessagingService {
   private async recipients(t: { id: string; channel: ThreadChannel; weddingId: string | null; vendorId: string | null; wedding?: { coupleId: string; plannerId: string | null } | null }) {
     const members = await this.prisma.messageThreadMember.findMany({ where: { threadId: t.id }, select: { userId: true } });
     const ids = new Set(members.map((m) => m.userId));
-    const staff = await this.prisma.user.findMany({ where: { status: UserStatus.ACTIVE, role: { in: [Role.ADMIN, ...STAFF_ROLES] } }, select: { id: true, role: true } });
+    const staff = await this.prisma.user.findMany({ where: { status: UserStatus.ACTIVE, role: { in: [Role.FOUNDER, ...STAFF_ROLES] } }, select: { id: true, role: true } });
     for (const s of staff) if (staffCanSee(s, { channel: t.channel, memberIds: [...ids], hasWedding: !!t.weddingId, weddingPlannerId: t.wedding?.plannerId })) ids.add(s.id);
     if (t.channel === ThreadChannel.CLIENT && t.wedding) (await this.prisma.user.findMany({ where: { coupleId: t.wedding.coupleId, role: Role.CLIENT, status: UserStatus.ACTIVE }, select: { id: true } })).forEach((x) => ids.add(x.id));
     if (t.channel === ThreadChannel.VENDOR && t.vendorId) (await this.prisma.user.findMany({ where: { vendorId: t.vendorId, role: Role.VENDOR, status: UserStatus.ACTIVE }, select: { id: true } })).forEach((x) => ids.add(x.id));

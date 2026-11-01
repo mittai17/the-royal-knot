@@ -25,11 +25,11 @@ export class ChecklistsController {
     return this.svc.uploadPhoto(body.weddingId, file, u);
   }
 
-  @Get() list(@Query() q: ChecklistQuery) { return this.svc.list(q); }
+  @Get() list(@Query() q: ChecklistQuery, @CurrentUser() u: AuthUser) { return this.svc.list(q, u); }
   @Post() create(@Body() dto: CreateChecklistDto, @CurrentUser() u: AuthUser) { return this.svc.create(dto, u); }
   @Patch('items/:itemId') updateItem(@Param('itemId', ParseUUIDPipe) id: string, @Body() dto: UpdateItemDto, @CurrentUser() u: AuthUser) { return this.svc.updateItem(id, dto, u); }
   @Delete('items/:itemId') removeItem(@Param('itemId', ParseUUIDPipe) id: string, @CurrentUser() u: AuthUser) { return this.svc.removeItem(id, u); }
-  @Get(':id') get(@Param('id', ParseUUIDPipe) id: string) { return this.svc.get(id); }
+  @Get(':id') get(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() u: AuthUser) { return this.svc.get(id, u); }
   @Patch(':id') update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateChecklistDto, @CurrentUser() u: AuthUser) { return this.svc.update(id, dto, u); }
   @Delete(':id') remove(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() u: AuthUser) { return this.svc.remove(id, u); }
   @Post(':id/items') addItem(@Param('id', ParseUUIDPipe) id: string, @Body() dto: CreateItemDto, @CurrentUser() u: AuthUser) { return this.svc.addItem(id, dto, u); }

@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { Role } from '@prisma/client';
-import { ACTIONS, MODULES, expandMatrix } from '../../../common/permissions';
+import { ACTIONS, FOUNDER_DENIED, MODULES, expandMatrix } from '../../../common/permissions';
 import { PrismaService } from '../../../database/prisma.service';
 
 type Cell = { read: boolean; write: boolean; approve: boolean };
@@ -11,7 +11,7 @@ const CODE_DEFAULTS = (() => { const m = new Map<string, boolean>(); for (const 
 
 /**
  * DB-backed permission lookup. RolePermission rows (edited in Admin > Roles & Permissions) win; where a row is missing the
- * code-defined PERMISSION_MATRIX is the fallback. 'write' implies 'read'. ADMIN is always allowed.
+ * code-defined PERMISSION_MATRIX is the fallback. 'write' implies 'read'. FOUNDER is always allowed except FOUNDER_DENIED (posted accounting stays untouchable).
  */
 @Injectable()
 export class PermissionsService {
@@ -35,7 +35,7 @@ export class PermissionsService {
   }
 
   async can(role: Role | string, module: string, action: 'read' | 'write' | 'approve' | string): Promise<boolean> {
-    if (role === Role.ADMIN) return true;
+    if (role === Role.FOUNDER) return !FOUNDER_DENIED.includes(`${module}:${action}`);
     const rows = await this.rows();
     if (this.cell(rows, role, module, action)) return true;
     return action === 'read' ? this.cell(rows, role, module, 'write') : false;
@@ -47,8 +47,9 @@ export class PermissionsService {
     for (const role of Object.values(Role)) {
       out[role] = {};
       for (const m of MODULES) {
-        const write = role === Role.ADMIN || this.cell(rows, role, m, 'write');
-        out[role][m] = { read: role === Role.ADMIN || write || this.cell(rows, role, m, 'read'), write, approve: role === Role.ADMIN || this.cell(rows, role, m, 'approve') };
+        const f = role === Role.FOUNDER;
+        const write = f ? !FOUNDER_DENIED.includes(`${m}:write`) : this.cell(rows, role, m, 'write');
+        out[role][m] = { read: f || write || this.cell(rows, role, m, 'read'), write, approve: f ? !FOUNDER_DENIED.includes(`${m}:approve`) : this.cell(rows, role, m, 'approve') };
       }
     }
     return out;

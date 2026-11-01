@@ -9,10 +9,10 @@ export interface NotifyInput { type: string; title: string; body?: string; link?
 export class NotificationsService {
   constructor(private prisma: PrismaService, private rt: RealtimeService) {}
 
-  /** Targets explicit users and/or every active user holding one of `roles` (ADMIN always included). Dedupe key makes scheduled jobs idempotent. */
+  /** Targets explicit users and/or every active user holding one of `roles` (FOUNDER always included). Dedupe key makes scheduled jobs idempotent. */
   async notify(n: NotifyInput) {
     const targets = new Set(n.userIds ?? []);
-    const roleUsers = await this.prisma.user.findMany({ where: { status: UserStatus.ACTIVE, role: { in: [Role.ADMIN, ...(n.roles ?? [])] } }, select: { id: true } });
+    const roleUsers = await this.prisma.user.findMany({ where: { status: UserStatus.ACTIVE, role: { in: [Role.FOUNDER, ...(n.roles ?? [])] } }, select: { id: true } });
     if (n.roles) roleUsers.forEach((u) => targets.add(u.id));
     else if (!n.userIds?.length) roleUsers.forEach((u) => targets.add(u.id));
     let created = 0;

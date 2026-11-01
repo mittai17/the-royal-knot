@@ -1,6 +1,8 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InvitationStatus, Prisma, RSVP } from '@prisma/client';
 import { AuthUser } from '../../common/decorators';
+import { ScopeService } from '../../common/scope.service';
+import { assertTransition, RSVP_TRANSITIONS } from '../../common/state-machines';
 import { orderBy, Paginated, skipTake } from '../../common/pagination';
 import { PrismaService } from '../../database/prisma.service';
 import { RealtimeService } from '../../websocket/realtime.service';
@@ -26,9 +28,10 @@ const truthy = (v?: string) => /^(y|yes|true|1|needed)$/i.test((v ?? '').trim())
 
 @Injectable()
 export class GuestsService {
-  constructor(private prisma: PrismaService, private audit: AuditService, private rt: RealtimeService) {}
+  constructor(private prisma: PrismaService, private audit: AuditService, private rt: RealtimeService, private scope: ScopeService) {}
 
-  async list(weddingId: string, q: GuestQuery) {
+  async list(weddingId: string, q: GuestQuery, user?: AuthUser) {
+    if (user) await this.scope.assertWeddingAccess(user, weddingId);
     const where: Prisma.GuestWhereInput = {
       weddingId, ...(q.rsvp ? { rsvp: q.rsvp } : {}), ...(q.invitationStatus ? { invitationStatus: q.invitationStatus } : {}), ...(q.groupName ? { groupName: q.groupName } : {}), ...(q.category ? { category: q.category } : {}),
       ...(q.checkedIn !== undefined ? { checkedIn: q.checkedIn } : {}), ...(q.accommodation !== undefined ? { accommodationNeeded: q.accommodation } : {}),
@@ -42,7 +45,8 @@ export class GuestsService {
   }
 
   /** Expected = invitation head-count (guests + plus-ones); Confirmed = RSVP yes (+ plus-ones); Actual = checked-in heads. */
-  async stats(weddingId: string) {
+  async stats(weddingId: string, user?: AuthUser) {
+    if (user) await this.scope.assertWeddingAccess(user, weddingId);
     const w = await this.prisma.wedding.findUnique({ where: { id: weddingId }, select: { expectedGuests: true, actualGuests: true } });
     if (!w) throw new NotFoundException('Wedding not found');
     const [rsvp, groups, dietary, totals, accom] = await Promise.all([
@@ -56,20 +60,32 @@ export class GuestsService {
     const invited = totals._count + (totals._sum.plusOnes ?? 0);
     return {
       weddingExpected: w.expectedGuests, invitedHeadcount: invited, guests: totals._count,
-      confirmed: heads('YES'), declined: heads('NO'), maybe: heads('MAYBE'), pending: heads('PENDING'),
+      confirmed: heads('CONFIRMED'), declined: heads('DECLINED'), pending: heads('PENDING'),
       checkedIn: totals._sum.checkedInCount ?? 0, actualRecorded: w.actualGuests, accommodationNeeded: accom,
       rsvp: Object.fromEntries(rsvp.map((r) => [r.rsvp, r._count])), groups: groups.map((g) => ({ group: g.groupName ?? 'Ungrouped', count: g._count })).sort((a, b) => b.count - a.count), dietary: dietary.map((d) => ({ dietary: d.dietary, count: d._count })),
     };
   }
 
   async create(weddingId: string, dto: CreateGuestDto, actor: AuthUser) {
+    await this.scope.assertWeddingAccess(actor, weddingId);
+    if (!(await this.prisma.wedding.count({ where: { id: weddingId } }))) throw new NotFoundException('Wedding not found');
     const g = await this.prisma.guest.create({ data: { ...dto, weddingId } });
     await this.broadcast(weddingId);
     await this.audit.log({ actorId: actor.id, weddingId, entity: 'Guest', entityId: g.id, action: 'create', message: `Registered guest ${g.name}` });
     return g;
   }
 
+  /** Loads a guest and 403s unless the actor may access its wedding (IDOR guard for every /guests/:id route). */
+  private async own(id: string, actor: AuthUser) {
+    const g = await this.prisma.guest.findUnique({ where: { id } });
+    if (!g) throw new NotFoundException('Guest not found');
+    await this.scope.assertWeddingAccess(actor, g.weddingId);
+    return g;
+  }
+
   async update(id: string, dto: UpdateGuestDto, actor: AuthUser) {
+    const cur = await this.own(id, actor);
+    if (dto.rsvp) assertTransition('RSVP', RSVP_TRANSITIONS, cur.rsvp, dto.rsvp, { allowSame: true });
     const g = await this.prisma.guest.update({ where: { id }, data: dto }).catch(() => { throw new NotFoundException('Guest not found'); });
     await this.broadcast(g.weddingId);
     await this.audit.log({ actorId: actor.id, weddingId: g.weddingId, entity: 'Guest', entityId: id, action: 'update', message: `Updated guest ${g.name}${dto.rsvp ? ` (RSVP ${dto.rsvp})` : ''}` });
@@ -77,6 +93,7 @@ export class GuestsService {
   }
 
   async remove(id: string, actor: AuthUser) {
+    await this.own(id, actor);
     const g = await this.prisma.guest.delete({ where: { id } }).catch(() => { throw new NotFoundException('Guest not found'); });
     await this.broadcast(g.weddingId);
     await this.audit.log({ actorId: actor.id, weddingId: g.weddingId, entity: 'Guest', entityId: id, action: 'delete', message: `Removed guest ${g.name}` });
@@ -84,8 +101,7 @@ export class GuestsService {
   }
 
   async checkIn(id: string, dto: CheckInDto, actor: AuthUser) {
-    const prev = await this.prisma.guest.findUnique({ where: { id } });
-    if (!prev) throw new NotFoundException('Guest not found');
+    const prev = await this.own(id, actor);
     const count = dto.undo ? 0 : dto.count ?? 1 + prev.plusOnes;
     const g = await this.prisma.guest.update({ where: { id }, data: dto.undo ? { checkedIn: false, checkedInAt: null, checkedInCount: 0 } : { checkedIn: true, checkedInAt: new Date(), checkedInCount: count } });
     await this.audit.log({ actorId: actor.id, weddingId: g.weddingId, entity: 'Guest', entityId: id, action: dto.undo ? 'checkin.undo' : 'checkin', message: `${dto.undo ? 'Undid check-in for' : 'Checked in'} ${g.name}${dto.undo ? '' : ` (${count})`}` });
@@ -95,6 +111,7 @@ export class GuestsService {
 
   /** CSV columns (header row required): name, phone, email, group, category, plusOnes, dietary, accommodation, rsvp, invitation. Existing name+phone pairs are skipped. */
   async importCsv(weddingId: string, csv: string, actor: AuthUser) {
+    await this.scope.assertWeddingAccess(actor, weddingId);
     const rows = parseCsv(csv.replace(/^﻿/, ''));
     if (rows.length < 2) throw new BadRequestException('CSV needs a header row and at least one guest');
     const header = rows[0].map((h) => h.trim().toLowerCase().replace(/[^a-z]/g, ''));
@@ -114,7 +131,7 @@ export class GuestsService {
       const rsvp = get(idx.rsvp).toUpperCase(); const inv = get(idx.inv).toUpperCase().replace(/ /g, '_');
       const plus = parseInt(get(idx.plus) || '0', 10);
       if (Number.isNaN(plus) || plus < 0) return errors.push({ row: i + 2, error: 'plusOnes must be a non-negative number' });
-      data.push({ weddingId, name, phone: get(idx.phone) || null, email: get(idx.email) || null, groupName: get(idx.group) || null, category: get(idx.category) || null, plusOnes: plus, dietary: get(idx.diet) || null, accommodationNeeded: truthy(get(idx.accom)), rsvp: (['YES', 'NO', 'MAYBE', 'PENDING'].includes(rsvp) ? rsvp : 'PENDING') as RSVP, invitationStatus: (['NOT_SENT', 'SENT', 'DELIVERED'].includes(inv) ? inv : 'NOT_SENT') as InvitationStatus });
+      data.push({ weddingId, name, phone: get(idx.phone) || null, email: get(idx.email) || null, groupName: get(idx.group) || null, category: get(idx.category) || null, plusOnes: plus, dietary: get(idx.diet) || null, accommodationNeeded: truthy(get(idx.accom)), rsvp: ((({ YES: 'CONFIRMED', NO: 'DECLINED', MAYBE: 'PENDING' }) as Record<string, string>)[rsvp] ?? (['CONFIRMED', 'DECLINED', 'PENDING'].includes(rsvp) ? rsvp : 'PENDING')) as RSVP, invitationStatus: (['NOT_SENT', 'SENT', 'DELIVERED'].includes(inv) ? inv : 'NOT_SENT') as InvitationStatus });
     });
     for (let i = 0; i < data.length; i += 500) await this.prisma.guest.createMany({ data: data.slice(i, i + 500) });
     await this.audit.log({ actorId: actor.id, weddingId, entity: 'Guest', action: 'import', message: `Imported ${data.length} guests from CSV (${errors.length} skipped)` });

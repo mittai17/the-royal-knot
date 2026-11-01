@@ -11,7 +11,7 @@ import { PermissionGuard, RequirePermission } from '../shared/permission.guard';
 import { PermissionsService } from './permissions.service';
 
 export const ROLE_INFO: Record<Role, { label: string; description: string }> = {
-  ADMIN: { label: 'Founder / Administrator', description: 'Full oversight: approvals, profitability, team and settings. Always allowed everywhere.' },
+  FOUNDER: { label: 'Founder / Director', description: 'Full oversight: approvals, profitability, team and settings. Always allowed everywhere.' },
   PLANNER: { label: 'Wedding Planner', description: 'Clients, proposals, planning, vendors and guests.' },
   EVENT_MANAGER: { label: 'Event Manager', description: 'Live operations, run sheet, vendor check-in and incidents.' },
   FINANCE: { label: 'Finance Manager', description: 'Invoices, vendor bills, payments, reconciliation and budgets.' },
@@ -47,17 +47,17 @@ export class RolesController {
       const total = groups.filter((g) => g.role === role).reduce((a, g) => a + g._count, 0);
       const active = groups.find((g) => g.role === role && g.status === 'ACTIVE')?._count ?? 0;
       const grants = Object.values(matrix[role]).reduce((a, c) => a + (c.read ? 1 : 0) + (c.write ? 1 : 0) + (c.approve ? 1 : 0), 0);
-      return { role, ...ROLE_INFO[role], userCount: total, activeUserCount: active, grantCount: grants, editable: role !== Role.ADMIN };
+      return { role, ...ROLE_INFO[role], userCount: total, activeUserCount: active, grantCount: grants, editable: role !== Role.FOUNDER };
     });
   }
 
   @Get('matrix') @RequirePermission('roles', 'read')
-  async matrix() { return { modules: MODULES, actions: ACTIONS, matrix: await this.perms.matrix(), locked: { ADMIN: 'all', SYSADMIN: [...SYSADMIN_LOCKED] } }; }
+  async matrix() { return { modules: MODULES, actions: ACTIONS, matrix: await this.perms.matrix(), locked: { FOUNDER: 'all', SYSADMIN: [...SYSADMIN_LOCKED] } }; }
 
   @Put(':role/permissions') @RequirePermission('roles', 'write')
   async update(@Param('role') roleParam: string, @Body() dto: UpdatePermissionsDto, @CurrentUser() u: AuthUser) {
     const role = this.parseRole(roleParam);
-    if (role === Role.ADMIN) throw new BadRequestException('The Founder / Administrator role always has full access and cannot be edited');
+    if (role === Role.FOUNDER) throw new BadRequestException('The Founder / Director role always has full access and cannot be edited');
     const before = await this.perms.matrix();
     const applied: { module: string; action: string; allowed: boolean }[] = [];
     for (const c of dto.changes) {
@@ -82,7 +82,7 @@ export class RolesController {
   @Post(':role/reset') @RequirePermission('roles', 'write')
   async reset(@Param('role') roleParam: string, @CurrentUser() u: AuthUser) {
     const role = this.parseRole(roleParam);
-    if (role === Role.ADMIN) throw new BadRequestException('The Founder / Administrator role cannot be edited');
+    if (role === Role.FOUNDER) throw new BadRequestException('The Founder / Director role cannot be edited');
     const rows = expandMatrix().filter((r) => r.role === role);
     await this.prisma.$transaction([this.prisma.rolePermission.deleteMany({ where: { role } }), this.prisma.rolePermission.createMany({ data: rows })]);
     this.perms.invalidate();

@@ -65,7 +65,7 @@ export function TodaysEvents() {
                 </Card>
               </div>
               <div className="space-y-5 min-w-0">
-                <Card title="Vendor check-in" action={<Link href="/vendor-checkin" className="text-xs text-burgundy hover:underline">Open board</Link>}>
+                <Card title="Vendor check-in" action={<Link href="/command-centre/vendor-checkin" className="text-xs text-burgundy hover:underline">Open board</Link>}>
                   {data.checkin.total === 0 ? <p className="text-sm text-ink-soft">No vendors are booked on today’s weddings.</p> : (
                     <div className="flex flex-wrap items-center gap-5">
                       <div className="relative h-36 w-36 shrink-0">

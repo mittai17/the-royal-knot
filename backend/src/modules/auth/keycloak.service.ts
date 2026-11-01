@@ -10,7 +10,7 @@ import { AuditService } from '../audit/audit.service';
 
 /** Keycloak realm role -> app role. Order = precedence when a user holds several roles. */
 const ROLE_MAP: [string, Role][] = [
-  ['FOUNDER', Role.ADMIN], ['FOUNDER_ADMIN', Role.ADMIN],
+  ['FOUNDER', Role.FOUNDER], ['FOUNDER_ADMIN', Role.FOUNDER],
   ['FINANCE_MANAGER', Role.FINANCE],
   ['EVENT_MANAGER', Role.EVENT_MANAGER],
   ['WEDDING_PLANNER', Role.PLANNER],

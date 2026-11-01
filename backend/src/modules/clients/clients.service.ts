@@ -22,7 +22,7 @@ export class ClientsService {
       ? { OR: [{ brideName: { contains: q.search, mode: 'insensitive' } }, { groomName: { contains: q.search, mode: 'insensitive' } }, { email: { contains: q.search, mode: 'insensitive' } }, { phone: { contains: q.search } }, { weddings: { some: { name: { contains: q.search, mode: 'insensitive' } } } }] }
       : {};
     const [rows, total] = await Promise.all([
-      this.prisma.couple.findMany({ where, orderBy: { createdAt: 'desc' }, ...skipTake(q), include: { weddings: { select: { id: true, name: true, startDate: true, status: true, contractValue: true }, orderBy: { startDate: 'desc' } }, _count: { select: { enquiries: true, users: true } } } }),
+      this.prisma.couple.findMany({ where, orderBy: { createdAt: 'desc' }, ...skipTake(q), include: { weddings: { select: { id: true, name: true, startDate: true, status: true, bookingStatus: true, contractValue: true }, orderBy: { startDate: 'desc' } }, _count: { select: { enquiries: true, users: true } } } }),
       this.prisma.couple.count({ where }),
     ]);
     const wids = rows.flatMap((r) => r.weddings.map((w) => w.id));
@@ -31,14 +31,16 @@ export class ClientsService {
     const last = await this.prisma.messageThread.groupBy({ by: ['weddingId'], where: { channel: 'CLIENT', weddingId: { in: wids } }, _max: { lastMessageAt: true } });
     const items = rows.map((r) => {
       const ids = r.weddings.map((w) => w.id);
-      const contract = r.weddings.reduce((s, w) => s + n(w.contractValue), 0);
+      // drafts (and cancelled workspaces) are not bookings: they never count towards the client's contract / expected value
+      const confirmedIds = r.weddings.filter((w) => w.bookingStatus === 'CONFIRMED').map((w) => w.id);
+      const contract = r.weddings.filter((w) => w.bookingStatus === 'CONFIRMED').reduce((s, w) => s + n(w.contractValue), 0);
       const received = paid.filter((p) => ids.includes(p.weddingId)).reduce((s, p) => s + n(p._sum.amount), 0);
-      const expected = exp.filter((p) => ids.includes(p.weddingId)).reduce((s, p) => s + n(p._sum.expectedAmount), 0);
+      const expected = exp.filter((p) => confirmedIds.includes(p.weddingId)).reduce((s, p) => s + n(p._sum.expectedAmount), 0);
       const lastAt = last.filter((l) => l.weddingId && ids.includes(l.weddingId)).map((l) => l._max.lastMessageAt).filter((d): d is Date => !!d).sort((a, b) => b.getTime() - a.getTime())[0] ?? null;
       const next = [...r.weddings].filter((w) => w.startDate >= new Date()).sort((a, b) => a.startDate.getTime() - b.startDate.getTime())[0] ?? r.weddings[0];
       return {
         id: r.id, brideName: r.brideName, groomName: r.groomName, name: `${r.brideName} & ${r.groomName}`, phone: r.phone, email: r.email, createdAt: r.createdAt,
-        weddingsCount: r.weddings.length, enquiriesCount: r._count.enquiries, portalUsers: r._count.users, wedding: next ? { id: next.id, name: next.name, startDate: next.startDate, status: next.status } : null,
+        weddingsCount: r.weddings.length, enquiriesCount: r._count.enquiries, portalUsers: r._count.users, wedding: next ? { id: next.id, name: next.name, startDate: next.startDate, status: next.status, bookingStatus: next.bookingStatus } : null,
         payments: paymentSummary(contract, expected, received), lastContactAt: lastAt,
       };
     });
@@ -62,13 +64,13 @@ export class ClientsService {
       const expected = w.milestones.reduce((s, m) => s + n(m.expectedAmount), 0);
       const nextDue = w.milestones.find((m) => m.payments.reduce((x, p) => x + n(p.amount), 0) < n(m.expectedAmount));
       return {
-        id: w.id, name: w.name, location: w.location, venue: w.venue, startDate: w.startDate, endDate: w.endDate, status: w.status, packageType: w.packageType, expectedGuests: w.expectedGuests, planner: w.planner,
+        id: w.id, name: w.name, location: w.location, venue: w.venue, startDate: w.startDate, endDate: w.endDate, status: w.status, bookingStatus: w.bookingStatus, executionStage: w.executionStage, packageType: w.packageType, expectedGuests: w.expectedGuests, planner: w.planner,
         payments: paymentSummary(n(w.contractValue), expected, received), nextDue: nextDue ? { type: nextDue.type, dueDate: nextDue.dueDate, expectedAmount: nextDue.expectedAmount } : null,
       };
     });
-    const total = weddings.reduce((a, w) => ({ contractValue: a.contractValue + w.payments.contractValue, expected: a.expected + w.payments.expected, received: a.received + w.payments.received, outstanding: a.outstanding + w.payments.outstanding }), { contractValue: 0, expected: 0, received: 0, outstanding: 0 });
+    const total = weddings.filter((w) => w.bookingStatus === 'CONFIRMED').reduce((a, w) => ({ contractValue: a.contractValue + w.payments.contractValue, expected: a.expected + w.payments.expected, received: a.received + w.payments.received, outstanding: a.outstanding + w.payments.outstanding }), { contractValue: 0, expected: 0, received: 0, outstanding: 0 });
     // Client chat transcripts are for the planning side only (finance sees payments, not conversations).
-    const canSeeChat = u.role === Role.ADMIN || u.role === Role.PLANNER;
+    const canSeeChat = u.role === Role.FOUNDER || u.role === Role.PLANNER;
     let communications: unknown = null;
     if (canSeeChat) {
       const threads = await this.prisma.messageThread.findMany({ where: { channel: 'CLIENT', weddingId: { in: wids } }, select: { id: true, subject: true, weddingId: true, lastMessageAt: true, _count: { select: { messages: true } } }, orderBy: { lastMessageAt: 'desc' } });

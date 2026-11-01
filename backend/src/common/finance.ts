@@ -5,6 +5,21 @@ export const D = (v: Prisma.Decimal.Value | null | undefined): Dec => new Prisma
 export const money = (d: Dec): Dec => d.toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
 export const sum = (xs: (Prisma.Decimal.Value | null | undefined)[]): Dec => xs.reduce<Dec>((a, x) => a.plus(D(x)), D(0));
 
+/** A vendor payment row as stored: only PAID rows count; a reversal row (reversalOfId set) takes money back out. */
+export interface VendorPaymentRow { amount: Prisma.Decimal.Value; status?: string; reversalOfId?: string | null }
+export const vendorPaid = (rows: VendorPaymentRow[]): Dec => rows.reduce<Dec>((a, p) => (p.status && p.status !== 'PAID' ? a : p.reversalOfId ? a.minus(D(p.amount)) : a.plus(D(p.amount))), D(0));
+
+/** A client payment row as stored: SUCCEEDED (and fully refunded originals, which a reversal row then offsets) count; PENDING / PROCESSING / FAILED never do. */
+export interface ClientPaymentRow { amount: Prisma.Decimal.Value; status?: string; reversalOfId?: string | null }
+export const clientReceived = (rows: ClientPaymentRow[]): Dec => rows.reduce<Dec>((a, p) => {
+  if (p.reversalOfId) return p.status && p.status !== 'SUCCEEDED' ? a : a.minus(D(p.amount));
+  return p.status && p.status !== 'SUCCEEDED' && p.status !== 'REFUNDED' ? a : a.plus(D(p.amount));
+}, D(0));
+
+/** Decimal comparator helpers (never go through Number() for money). */
+export const byDesc = <T,>(f: (x: T) => Dec) => (a: T, b: T) => f(b).comparedTo(f(a));
+export const byAsc = <T,>(f: (x: T) => Dec) => (a: T, b: T) => f(a).comparedTo(f(b));
+
 export interface QuoteLineInput { quantity: Prisma.Decimal.Value; unitPrice: Prisma.Decimal.Value; taxRate?: Prisma.Decimal.Value; additionalCharge?: Prisma.Decimal.Value; included?: boolean }
 
 /** Totals for a quotation. Excluded lines are listed on the quote but never priced into totals. */

@@ -2,13 +2,14 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException, 
 import { Prisma, VendorBillStatus } from '@prisma/client';
 import { AuthUser } from '../../common/decorators';
 import { D, money, sum } from '../../common/finance';
+import { assertIndependent, financeLimits } from '../../common/finance-policy';
 import { Paginated } from '../../common/pagination';
 import { inr } from '../../common/pdf-templates';
 import { PrismaService } from '../../database/prisma.service';
 import { ApprovalsService } from '../approvals/approvals.service';
 import { AuditService } from '../audit/audit.service';
 import { NotificationsService } from '../notifications/notifications.service';
-import { PaymentsService } from '../payments/payments.service';
+import { VendorPaymentsService } from '../vendor-payments/vendor-payments.service';
 import { billOutstanding, billStatus, matchAgainstPo } from './bill-math';
 import { BillQuery, CreateVendorBillDto, PayBillDto } from './vendor-bills.dto';
 
@@ -19,12 +20,11 @@ const include = {
 } satisfies Prisma.VendorBillInclude;
 type Bill = Prisma.VendorBillGetPayload<{ include: typeof include }>;
 
-/** Bills above this need a Founder-approved VENDOR_PAYMENT approval before finance can approve them. */
-export const billApprovalLimit = () => Number(process.env.BILL_APPROVAL_LIMIT ?? 100000);
+const lc = (s: string) => s.toLowerCase().replace(/_/g, ' ');
 
 @Injectable()
 export class VendorBillsService {
-  constructor(private prisma: PrismaService, private audit: AuditService, private notif: NotificationsService, private payments: PaymentsService, private approvals: ApprovalsService) {}
+  constructor(private prisma: PrismaService, private audit: AuditService, private notif: NotificationsService, private vp: VendorPaymentsService, private approvals: ApprovalsService) {}
 
   shape(b: Bill, now = new Date()) {
     return { ...b, status: billStatus(b, now), storedStatus: b.status, outstanding: billOutstanding(b.total, b.amountPaid) };
@@ -33,7 +33,7 @@ export class VendorBillsService {
   async list(q: BillQuery) {
     const now = new Date();
     const overdueCut = new Date(now.getTime() - 24 * 3600 * 1000 + 1);
-    const unpaid: VendorBillStatus[] = ['SUBMITTED', 'VERIFIED', 'APPROVED', 'OVERDUE'];
+    const unpaid: VendorBillStatus[] = ['SUBMITTED', 'VERIFIED', 'APPROVED', 'PARTIALLY_PAID', 'OVERDUE'];
     const statusWhere: Prisma.VendorBillWhereInput = !q.status ? {} : q.status === 'OVERDUE' ? { status: { in: unpaid }, dueDate: { lt: overdueCut } }
       : unpaid.includes(q.status) ? { status: q.status, OR: [{ dueDate: null }, { dueDate: { gte: overdueCut } }] } : { status: q.status };
     const where: Prisma.VendorBillWhereInput = {
@@ -54,7 +54,7 @@ export class VendorBillsService {
     const live = all.map((a) => ({ ...a, live: billStatus(a, now) }));
     const of = (s: VendorBillStatus) => live.filter((x) => x.live === s);
     const out = (xs: typeof live) => money(sum(xs.map((x) => billOutstanding(x.total, x.amountPaid))));
-    const counts = Object.fromEntries((['SUBMITTED', 'VERIFIED', 'APPROVED', 'PAID', 'OVERDUE', 'REJECTED'] as VendorBillStatus[]).map((s) => [s, of(s).length]));
+    const counts = Object.fromEntries((['SUBMITTED', 'VERIFIED', 'APPROVED', 'PARTIALLY_PAID', 'PAID', 'OVERDUE', 'REJECTED'] as VendorBillStatus[]).map((s) => [s, of(s).length]));
     return { counts, payable: out(live.filter((x) => !['PAID', 'REJECTED'].includes(x.live))), overdue: out(of('OVERDUE')), awaitingApproval: out([...of('SUBMITTED'), ...of('VERIFIED')]), paid: money(sum(live.map((x) => x.amountPaid))) };
   }
 
@@ -65,19 +65,22 @@ export class VendorBillsService {
   }
 
   async detail(b: Bill) {
-    const [po, quotation, payments, approval, people] = await Promise.all([
+    const [po, quotation, payments, approval, people, limits, vendorPayments] = await Promise.all([
       b.purchaseOrderId ? this.prisma.vendorBill.aggregate({ where: { purchaseOrderId: b.purchaseOrderId, id: { not: b.id }, status: { not: 'REJECTED' } }, _sum: { total: true } }) : null,
       b.purchaseOrder?.quotationId ? this.prisma.quotation.findUnique({ where: { id: b.purchaseOrder.quotationId }, select: { id: true, grandTotal: true, status: true } }) : null,
-      this.prisma.activityLog.findMany({ where: { entity: 'VendorBill', entityId: b.id, action: { in: ['pay'] } }, orderBy: { createdAt: 'desc' }, include: { actor: { select: { name: true } } } }),
+      this.prisma.vendorBillPayment.findMany({ where: { billId: b.id }, orderBy: { paidAt: 'desc' } }),
       this.approvals.latestFor('VendorBill', b.id, 'VENDOR_PAYMENT'),
       this.prisma.user.findMany({ where: { id: { in: [b.submittedById, b.verifiedById, b.approvedById].filter(Boolean) as string[] } }, select: { id: true, name: true } }),
+      financeLimits(this.prisma),
+      this.prisma.vendorPayment.findMany({ where: { billId: b.id }, orderBy: { createdAt: 'desc' }, select: { id: true, amount: true, status: true, kind: true, scheduledFor: true, paidAt: true, requestedById: true, reversalOfId: true } }),
     ]);
     const name = (id?: string | null) => people.find((p) => p.id === id)?.name ?? null;
     const match = matchAgainstPo(b.total, b.purchaseOrder ? { total: b.purchaseOrder.total, billed: po?._sum.total ?? 0 } : null);
     return {
       ...this.shape(b), match: { ...match, quotationTotal: quotation?.grandTotal ?? null },
-      payments: payments.map((p) => ({ id: p.id, at: p.createdAt, by: p.actor?.name ?? null, amount: (p.meta as { amount?: string } | null)?.amount ?? null, method: (p.meta as { method?: string } | null)?.method ?? null, reference: (p.meta as { reference?: string } | null)?.reference ?? null })),
-      approval: approval ? { id: approval.id, status: approval.status } : null, requiresApproval: D(b.total).gt(billApprovalLimit()), approvalLimit: billApprovalLimit(),
+      payments: payments.map((p) => ({ id: p.id, at: p.paidAt, amount: p.amount, method: p.method, reference: p.reference, vendorPaymentId: p.vendorPaymentId, isReversal: !!p.reversalOfId, reversedAt: p.reversedAt })),
+      vendorPayments,
+      approval: approval ? { id: approval.id, status: approval.status } : null, requiresApproval: D(b.total).gt(limits.vendorPayment), approvalLimit: limits.vendorPayment,
       submittedBy: name(b.submittedById), verifiedBy: name(b.verifiedById), approvedBy: name(b.approvedById),
     };
   }
@@ -116,7 +119,7 @@ export class VendorBillsService {
   private async transition(id: string, from: VendorBillStatus[], data: Prisma.VendorBillUpdateManyMutationInput & { verifiedById?: string; approvedById?: string }, actor: AuthUser, action: string, msg: (b: Bill) => string) {
     const b = await this.prisma.vendorBill.findUnique({ where: { id }, include });
     if (!b) throw new NotFoundException('Vendor bill not found');
-    if (!from.includes(b.status)) throw new UnprocessableEntityException(`A bill that is ${b.status.toLowerCase()} cannot be ${({ verify: 'verified', approve: 'approved', reject: 'rejected' } as Record<string, string>)[action] ?? action}`);
+    if (!from.includes(b.status)) throw new UnprocessableEntityException(`A bill that is ${lc(b.status)} cannot be ${({ verify: 'verified', approve: 'approved', reject: 'rejected' } as Record<string, string>)[action] ?? action}`);
     const claim = await this.prisma.vendorBill.updateMany({ where: { id, status: b.status }, data });
     if (!claim.count) throw new ConflictException('This bill was just changed by someone else — refresh and retry');
     await this.audit.log({ actorId: actor.id, weddingId: b.weddingId, entity: 'VendorBill', entityId: id, action, message: msg(b) });
@@ -124,6 +127,8 @@ export class VendorBillsService {
   }
 
   async verify(id: string, note: string | undefined, actor: AuthUser) {
+    const cur = await this.prisma.vendorBill.findUnique({ where: { id }, select: { total: true, submittedById: true } });
+    if (cur && D(cur.total).gt((await financeLimits(this.prisma)).vendorPayment)) assertIndependent(actor.id, [{ label: 'submitted', userId: cur.submittedById }], 'verify');
     const b = await this.transition(id, ['SUBMITTED'], { verifiedById: actor.id, status: 'VERIFIED' }, actor, 'verify', (x) => `Verified bill ${x.billNo} from ${x.vendor.name}${note ? ` — ${note}` : ''}`);
     return this.get(b.id);
   }
@@ -132,10 +137,12 @@ export class VendorBillsService {
     const b = await this.prisma.vendorBill.findUnique({ where: { id }, include });
     if (!b) throw new NotFoundException('Vendor bill not found');
     if (b.status !== 'VERIFIED') throw new UnprocessableEntityException(`Only verified bills can be approved (this one is ${b.status.toLowerCase()})`);
-    if (D(b.total).gt(billApprovalLimit()) && actor.role !== 'ADMIN') {
+    const limit = (await financeLimits(this.prisma)).vendorPayment;
+    if (D(b.total).gt(limit)) assertIndependent(actor.id, [{ label: 'submitted', userId: b.submittedById }, { label: 'verified', userId: b.verifiedById }], 'approve');
+    if (D(b.total).gt(limit) && actor.role !== 'FOUNDER') {
       const ap = await this.approvals.latestFor('VendorBill', id, 'VENDOR_PAYMENT');
       if (ap?.status !== 'APPROVED') {
-        const req = await this.approvals.requestFor({ type: 'VENDOR_PAYMENT', title: `Pay bill ${b.billNo} — ${b.vendor.name}`, description: `Bill total ${inr(b.total)} exceeds the ${inr(billApprovalLimit())} Finance limit`, amount: b.total, weddingId: b.weddingId, entity: 'VendorBill', entityId: id }, actor);
+        const req = await this.approvals.requestFor({ type: 'VENDOR_PAYMENT', title: `Approve bill ${b.billNo} — ${b.vendor.name}`, description: `Bill total ${inr(b.total)} exceeds the ${inr(limit)} Finance limit`, reason: `Bill above the Finance approval limit`, amount: b.total, weddingId: b.weddingId, entity: 'VendorBill', entityId: id, sourceModule: 'vendor-bills', sourceId: id }, actor);
         return { ...(await this.get(id)), approvalRequired: true, approvalRequest: { id: req.id, status: req.status } };
       }
     }
@@ -149,32 +156,51 @@ export class VendorBillsService {
     return this.get(id);
   }
 
-  /** Part or full payment of an approved bill. Idempotent on `idempotencyKey` (kept in the audit trail); wedding-linked bills also create a VendorPayment. */
+  /**
+   * Part or full payment of an approved bill (legacy direct route). It delegates to Vendor Payments: for a wedding-linked bill a VendorPayment is
+   * posted (PAID) together with the bill payment; Finance may do this up to the Founder approval limit and the Founder at any amount. Above the limit
+   * raise a request (POST /vendor-payments), which needs a different approver. Idempotent on `idempotencyKey`; capped at the outstanding balance.
+   */
   async pay(id: string, dto: PayBillDto, actor: AuthUser) {
-    const seen = await this.prisma.activityLog.findFirst({ where: { entity: 'VendorBill', entityId: id, action: 'pay', meta: { path: ['idempotencyKey'], equals: dto.idempotencyKey } } });
-    if (seen) return { duplicate: true, bill: await this.get(id) };
-    await this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT id FROM "VendorBill" WHERE id = ${id} FOR UPDATE`;
-      const dup = await tx.activityLog.findFirst({ where: { entity: 'VendorBill', entityId: id, action: 'pay', meta: { path: ['idempotencyKey'], equals: dto.idempotencyKey } } });
-      if (dup) return;
-      const b = await tx.vendorBill.findUnique({ where: { id }, include });
-      if (!b) throw new NotFoundException('Vendor bill not found');
-      if (b.status !== 'APPROVED') throw new UnprocessableEntityException(`Only approved bills can be paid (this one is ${b.status.toLowerCase()})`);
-      const due = billOutstanding(b.total, b.amountPaid);
-      if (D(dto.amount).gt(due)) throw new UnprocessableEntityException(`Amount exceeds the outstanding balance of ${inr(due)} on ${b.billNo}`);
-      const paid = money(D(b.amountPaid).plus(dto.amount));
-      const full = paid.gte(D(b.total));
-      let vendorPaymentId: string | null = null;
-      if (b.weddingId) {
-        const wv = await tx.weddingVendor.findFirst({ where: { weddingId: b.weddingId, vendorId: b.vendorId }, select: { id: true } });
-        if (wv) {
-          const r = await this.payments.recordVendor(b.weddingId, { weddingVendorId: wv.id, kind: full ? 'FINAL' : 'ADVANCE', amount: dto.amount, method: dto.method, reference: dto.reference ?? b.billNo, paidAt: dto.paidAt, idempotencyKey: `bill:${id}:${dto.idempotencyKey}` }, actor);
+    const key = `bill:${id}:${dto.idempotencyKey}`;
+    if (await this.prisma.vendorBillPayment.findUnique({ where: { idempotencyKey: key } })) return { duplicate: true, bill: await this.get(id) };
+    const limits = await financeLimits(this.prisma);
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT id FROM "VendorBill" WHERE id = ${id} FOR UPDATE`;
+        if (await tx.vendorBillPayment.findUnique({ where: { idempotencyKey: key } })) return;
+        const b = await tx.vendorBill.findUnique({ where: { id }, include });
+        if (!b) throw new NotFoundException('Vendor bill not found');
+        if (b.status !== 'APPROVED' && b.status !== 'PARTIALLY_PAID') throw new UnprocessableEntityException(`Only approved bills can be paid (this one is ${lc(b.status)})`);
+        const due = billOutstanding(b.total, b.amountPaid);
+        if (D(dto.amount).gt(due)) throw new UnprocessableEntityException(`Amount exceeds the outstanding balance of ${inr(due)} on ${b.billNo}`);
+        if (D(b.total).gt(limits.vendorPayment)) assertIndependent(actor.id, [{ label: 'approved', userId: b.approvedById }], 'pay');
+        const paidAt = dto.paidAt ? new Date(dto.paidAt) : new Date();
+        const full = money(D(b.amountPaid).plus(dto.amount)).gte(D(b.total));
+        let vendorPaymentId: string | null = null;
+        const wv = b.weddingId ? await tx.weddingVendor.findFirst({ where: { weddingId: b.weddingId, vendorId: b.vendorId }, select: { id: true } }) : null;
+        if (b.weddingId && wv) {
+          await tx.$queryRaw`SELECT id FROM "WeddingVendor" WHERE id = ${wv.id} FOR UPDATE`;
+          const r = await this.vp.postDirect(tx, { weddingId: b.weddingId, weddingVendorId: wv.id, billId: id, kind: full ? 'FINAL' : 'ADVANCE', amount: dto.amount, method: dto.method, reference: dto.reference ?? b.billNo, paidAt, idempotencyKey: key }, actor);
           vendorPaymentId = r.payment.id;
+        } else {
+          await this.vp.assertDirectAllowed(actor, dto.amount); // no wedding vendor row: settle the bill only, same approval gate
         }
-      }
-      await tx.vendorBill.update({ where: { id }, data: { amountPaid: paid, ...(full ? { status: 'PAID', paidAt: dto.paidAt ? new Date(dto.paidAt) : new Date() } : {}) } });
-      await this.audit.log({ actorId: actor.id, weddingId: b.weddingId, entity: 'VendorBill', entityId: id, action: 'pay', message: `Paid ${inr(dto.amount)} on bill ${b.billNo} to ${b.vendor.name}${full ? ' (settled)' : ''}`, meta: { idempotencyKey: dto.idempotencyKey, amount: String(dto.amount), method: dto.method, reference: dto.reference ?? null, vendorPaymentId } }, tx);
-    }, { timeout: 20000 });
+        await this.vp.applyBillPayment(tx, id, { amount: dto.amount, method: dto.method, reference: dto.reference ?? b.billNo, paidAt, idempotencyKey: key, vendorPaymentId, actorId: actor.id });
+        await this.audit.log({ actorId: actor.id, weddingId: b.weddingId, entity: 'VendorBill', entityId: id, action: 'pay', message: `Paid ${inr(dto.amount)} on bill ${b.billNo} to ${b.vendor.name}${full ? ' (settled)' : ''}`, meta: { idempotencyKey: dto.idempotencyKey, amount: String(dto.amount), method: dto.method, reference: dto.reference ?? null, vendorPaymentId } }, tx);
+      }, { timeout: 20000 });
+    } catch (e) {
+      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') return { duplicate: true, bill: await this.get(id) };
+      throw e;
+    }
     return { duplicate: false, bill: await this.get(id) };
+  }
+
+  /** Voids a bill that has no payments (a posted bill is never deleted; it is rejected so the history stays). */
+  async void(id: string, reason: string, actor: AuthUser) {
+    const b = await this.prisma.vendorBill.findUnique({ where: { id } });
+    if (!b) throw new NotFoundException('Vendor bill not found');
+    if (D(b.amountPaid).gt(0)) throw new UnprocessableEntityException('A bill with payments cannot be voided; reverse the payments first');
+    return this.reject(id, `Voided: ${reason}`, actor);
   }
 }

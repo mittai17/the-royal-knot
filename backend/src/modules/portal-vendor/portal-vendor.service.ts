@@ -17,6 +17,9 @@ const ist = (d: Date) => new Date(d.getTime() + 19_800_000).toISOString().slice(
 const DAY = 864e5;
 const wedBrief = { id: true, name: true, location: true, venue: true, startDate: true, endDate: true, expectedGuests: true, status: true } satisfies Prisma.WeddingSelect;
 
+/** Vendor-portal RFQ state labels (stable API view-model) derived from the canonical QuotationStatus. */
+const rfqState = (s: string) => (s === 'SENT' ? 'NEW' : s === 'RECEIVED' ? 'SUBMITTED' : s === 'SELECTED' ? 'ACCEPTED' : s === 'CLOSED' ? 'NOT_SELECTED' : s);
+
 @Injectable()
 export class PortalVendorService {
   constructor(
@@ -34,7 +37,7 @@ export class PortalVendorService {
   private async ownRequest(u: AuthUser, id: string) {
     const r = await this.prisma.quotationRequest.findUnique({ where: { id }, include: { wedding: { select: wedBrief }, quotation: { include: { items: true } } } });
     // 404 (not 403) so a vendor cannot probe for other vendors' RFQ ids
-    if (!r || r.vendorId !== this.vid(u)) throw new NotFoundException('RFQ not found');
+    if (!r || r.vendorId !== this.vid(u) || r.status === 'DRAFT') throw new NotFoundException('RFQ not found');
     return r;
   }
 
@@ -45,7 +48,7 @@ export class PortalVendorService {
     const [vendor, bookings, newRfqs, quoteGroups, upcomingEvents, reviews, nextBookings] = await Promise.all([
       this.prisma.vendor.findUniqueOrThrow({ where: { id: vendorId }, select: { id: true, name: true, businessName: true, category: true, rating: true, available: true } }),
       this.prisma.weddingVendor.findMany({ where: { vendorId, wedding: { status: { not: 'CANCELLED' } } }, select: { id: true } }),
-      this.prisma.quotationRequest.count({ where: { vendorId, status: 'REQUESTED' } }),
+      this.prisma.quotationRequest.count({ where: { vendorId, status: 'SENT' } }),
       this.prisma.quotation.groupBy({ by: ['status'], where: { request: { vendorId } }, _count: true }),
       this.prisma.weddingEvent.count({ where: { date: { gte: now }, wedding: { weddingVendors: { some: { vendorId } }, status: { not: 'CANCELLED' } } } }),
       this.prisma.vendorReview.aggregate({ where: { vendorId }, _avg: { rating: true }, _count: true }),
@@ -58,7 +61,7 @@ export class PortalVendorService {
       vendor, totalBookings: bookings.length, upcomingEvents, newRfqs,
       pendingPayments: { amount: pending, bookings: bills.filter((b) => b.remainingPayable.gt(0)).length },
       rating: { average: reviews._avg.rating ?? Number(vendor.rating), reviews: reviews._count, profileRating: vendor.rating },
-      quotations: { submitted: q('SUBMITTED'), accepted: q('ACCEPTED'), rejected: q('REJECTED') },
+      quotations: { submitted: q('RECEIVED'), accepted: q('SELECTED'), rejected: q('REJECTED') },
       nextBookings: nextBookings.map((b) => ({ id: b.id, category: b.category, wedding: b.wedding })),
     };
   }
@@ -91,12 +94,12 @@ export class PortalVendorService {
   async rfqs(u: AuthUser, q: RfqListQuery) {
     const vendorId = this.vid(u);
     const view = q.view ?? 'all';
-    const status = view === 'new' ? { status: 'REQUESTED' as const } : view === 'submitted' ? { status: 'RECEIVED' as const } : view === 'closed' ? { status: { in: ['ACCEPTED', 'NOT_SELECTED'] as ('ACCEPTED' | 'NOT_SELECTED')[] } } : {};
+    const status = view === 'new' ? { status: 'SENT' as const } : view === 'submitted' ? { status: 'RECEIVED' as const } : view === 'closed' ? { status: { in: ['SELECTED', 'CLOSED'] as ('SELECTED' | 'CLOSED')[] } } : { status: { not: 'DRAFT' as const } }; // DRAFT RFQs are prepared but not yet sent: invisible to vendors
     const rows = await this.prisma.quotationRequest.findMany({ where: { vendorId, ...status }, orderBy: { createdAt: 'desc' }, include: { wedding: { select: wedBrief }, quotation: { select: { id: true, status: true, grandTotal: true, createdAt: true } } } });
-    const counts = await this.prisma.quotationRequest.groupBy({ by: ['status'], where: { vendorId }, _count: true });
+    const counts = await this.prisma.quotationRequest.groupBy({ by: ['status'], where: { vendorId, status: { not: 'DRAFT' } }, _count: true });
     return {
-      counts: { new: counts.find((c) => c.status === 'REQUESTED')?._count ?? 0, submitted: counts.find((c) => c.status === 'RECEIVED')?._count ?? 0, closed: (counts.find((c) => c.status === 'ACCEPTED')?._count ?? 0) + (counts.find((c) => c.status === 'NOT_SELECTED')?._count ?? 0) },
-      rfqs: rows.map((r) => ({ id: r.id, title: r.title, category: r.category, brief: r.brief, status: r.status, state: r.status === 'REQUESTED' ? 'NEW' : r.status === 'RECEIVED' ? 'SUBMITTED' : r.status, createdAt: r.createdAt, wedding: r.wedding, quotation: r.quotation })),
+      counts: { new: counts.find((c) => c.status === 'SENT')?._count ?? 0, submitted: counts.find((c) => c.status === 'RECEIVED')?._count ?? 0, closed: (counts.find((c) => c.status === 'SELECTED')?._count ?? 0) + (counts.find((c) => c.status === 'CLOSED')?._count ?? 0) },
+      rfqs: rows.map((r) => ({ id: r.id, title: r.title, category: r.category, brief: r.brief, status: r.status, state: rfqState(r.status), createdAt: r.createdAt, wedding: r.wedding, quotation: r.quotation })),
     };
   }
 
@@ -105,8 +108,8 @@ export class PortalVendorService {
     const events = await this.prisma.weddingEvent.findMany({ where: { weddingId: r.weddingId }, orderBy: { date: 'asc' }, select: { id: true, name: true, kind: true, date: true, venue: true, expectedGuests: true } });
     return {
       id: r.id, title: r.title, category: r.category, brief: r.brief, status: r.status, createdAt: r.createdAt, closedAt: r.closedAt,
-      state: r.status === 'REQUESTED' ? 'NEW' : r.status === 'RECEIVED' ? 'SUBMITTED' : r.status,
-      canSubmit: r.status === 'REQUESTED' || r.status === 'RECEIVED',
+      state: rfqState(r.status),
+      canSubmit: r.status === 'SENT' || r.status === 'RECEIVED',
       wedding: r.wedding, events, quotation: r.quotation,
       requirements: { guests: r.wedding.expectedGuests, venue: r.wedding.venue, location: r.wedding.location, dates: { start: r.wedding.startDate, end: r.wedding.endDate }, brief: r.brief },
     };
@@ -115,7 +118,7 @@ export class PortalVendorService {
   /** One quotation per vendor per RFQ (DB unique on requestId): the first call creates it, later calls revise it until the RFQ is decided. */
   async submitQuotation(u: AuthUser, id: string, dto: PortalQuotationDto) {
     const r = await this.ownRequest(u, id);
-    if (r.status === 'ACCEPTED' || r.status === 'NOT_SELECTED') throw new ConflictException('This RFQ is closed');
+    if (r.status !== 'SENT' && r.status !== 'RECEIVED') throw new ConflictException('This RFQ is closed');
     if (dto.validUntil && new Date(dto.validUntil).getTime() < Date.now() - DAY) throw new BadRequestException('Validity date must be in the future');
     dto.items.forEach((i, n) => { if (!i.name.trim()) throw new BadRequestException(`Line ${n + 1}: item name is required`); if (!i.unit.trim()) throw new BadRequestException(`Line ${n + 1}: unit is required`); });
     if (!dto.items.some((i) => i.included !== false && i.quantity * i.unitPrice > 0)) throw new BadRequestException('At least one included line must have a price');
@@ -129,7 +132,7 @@ export class PortalVendorService {
     const rows = await this.prisma.quotationRequest.findMany({ where: { vendorId, quotation: { isNot: null } }, orderBy: { createdAt: 'desc' }, include: { wedding: { select: { id: true, name: true } }, quotation: { include: { items: { select: { id: true } } } } } });
     const sibs = await this.prisma.quotationRequest.findMany({ where: { rfqGroup: { in: rows.map((r) => r.rfqGroup) } }, select: { rfqGroup: true, quotation: { select: { id: true } } } });
     const ready = new Set(rows.map((r) => r.rfqGroup).filter((g) => sibs.filter((s) => s.rfqGroup === g).every((s) => s.quotation)));
-    const stage = (r: (typeof rows)[number]) => (r.quotation!.status === 'ACCEPTED' ? 'ACCEPTED' : r.quotation!.status === 'REJECTED' ? 'REJECTED' : ready.has(r.rfqGroup) ? 'UNDER_REVIEW' : 'SUBMITTED');
+    const stage = (r: (typeof rows)[number]) => (r.quotation!.status === 'SELECTED' ? 'ACCEPTED' : r.quotation!.status === 'REJECTED' ? 'REJECTED' : ready.has(r.rfqGroup) ? 'UNDER_REVIEW' : 'SUBMITTED');
     const list = rows.map((r) => ({ id: r.quotation!.id, requestId: r.id, title: r.title, category: r.category, wedding: r.wedding, stage: stage(r), grandTotal: r.quotation!.grandTotal, lines: r.quotation!.items.length, validUntil: r.quotation!.validUntil, decisionNote: r.quotation!.decisionNote, submittedAt: r.quotation!.createdAt }));
     const summary = { SUBMITTED: 0, UNDER_REVIEW: 0, ACCEPTED: 0, REJECTED: 0 } as Record<string, number>;
     list.forEach((l) => { summary[l.stage]++; });
@@ -322,13 +325,13 @@ export class PortalVendorService {
   async taskList(u: AuthUser) {
     const vendorId = this.vid(u);
     const rows = await this.prisma.weddingTask.findMany({ where: { weddingVendor: { vendorId } }, orderBy: [{ status: 'asc' }, { dueDate: 'asc' }], include: { wedding: { select: { id: true, name: true } } } });
-    return rows.map((t) => ({ id: t.id, name: t.name, description: t.description, category: t.category, priority: t.priority, status: t.status, dueDate: t.dueDate, completedAt: t.completedAt, evidenceNote: t.evidenceNote, wedding: t.wedding, overdue: t.status !== 'COMPLETED' && t.dueDate < new Date() }));
+    return rows.map((t) => ({ id: t.id, name: t.name, description: t.description, category: t.category, priority: t.priority, status: t.status, dueDate: t.dueDate, completedAt: t.completedAt, evidenceNote: t.evidenceNote, wedding: t.wedding, overdue: t.status !== 'DONE' && t.dueDate < new Date() }));
   }
   async updateTask(u: AuthUser, id: string, dto: VendorTaskDto) {
     const t = await this.prisma.weddingTask.findUnique({ where: { id }, include: { weddingVendor: { select: { vendorId: true } } } });
     if (!t || t.weddingVendor?.vendorId !== this.vid(u)) throw new NotFoundException('Task not found');
     if (!dto.status && dto.evidenceNote === undefined) throw new BadRequestException('Nothing to update');
-    if (t.status === 'COMPLETED' && dto.status && dto.status !== 'COMPLETED') throw new ForbiddenException('Completed tasks can only be reopened by your planner');
+    if (t.status === 'DONE' && dto.status && dto.status !== 'DONE') throw new ForbiddenException('Completed tasks can only be reopened by your planner');
     await this.tasks.update(id, { status: dto.status, evidenceNote: dto.evidenceNote }, u);
     return (await this.taskList(u)).find((x) => x.id === id);
   }

@@ -14,6 +14,6 @@ export function Can({ roles, children }: { roles: readonly Role[]; children: Rea
 export function RoleGate({ roles, children }: { roles: readonly Role[]; children: ReactNode }) {
   const { can, loading } = useAuth();
   if (loading) return null;
-  if (!can(...roles)) return <EmptyState title="You don’t have access to this screen" hint="Your role doesn’t include it. Ask a Founder / Administrator if you need access." />;
+  if (!can(...roles)) return <EmptyState title="You don’t have access to this screen" hint="Your role doesn’t include it. Ask a Founder / Director if you need access." />;
   return <>{children}</>;
 }

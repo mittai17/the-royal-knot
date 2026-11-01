@@ -1,7 +1,8 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException, UnprocessableEntityException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { AuthUser } from '../../common/decorators';
-import { D, money, sum } from '../../common/finance';
+import { byDesc, D, money, sum } from '../../common/finance';
+import { assertDifferentPerson, creatorOf, financeLimits } from '../../common/finance-policy';
 import { orderBy, Paginated, skipTake } from '../../common/pagination';
 import { inr } from '../../common/pdf-templates';
 import { vendorBill } from '../../common/vendor-bill';
@@ -21,7 +22,7 @@ export class ExpensesService {
     const [items, total, agg] = await Promise.all([
       this.prisma.expense.findMany({ where, include, orderBy: orderBy(q, ['date', 'amount', 'category', 'status', 'createdAt'], 'date'), ...skipTake(q) }),
       this.prisma.expense.count({ where }),
-      this.prisma.expense.groupBy({ by: ['status'], where, _sum: { amount: true } }),
+      this.prisma.expense.groupBy({ by: ['status'], where: { ...where, reversalOfId: null, reversedAt: null }, _sum: { amount: true } }),
     ]);
     const p = new Paginated(items, { page: q.page, pageSize: q.pageSize, total });
     (p.meta as Record<string, unknown>).totals = Object.fromEntries(agg.map((a) => [a.status, a._sum.amount]));
@@ -32,9 +33,9 @@ export class ExpensesService {
     const e = await this.prisma.expense.create({ data: { ...dto, date: new Date(dto.date), responsibleId: dto.responsibleId ?? actor.id }, include });
     await this.audit.log({ actorId: actor.id, weddingId: e.weddingId, entity: 'Expense', entityId: e.id, action: 'create', message: `Logged expense ${inr(e.amount)} — ${e.description}` });
     // Large extra expenses also show up in the Approvals Centre (the Expenses screen decision stays authoritative and is kept in sync).
-    const limit = Number(process.env.EXPENSE_APPROVAL_LIMIT ?? 25000);
-    if (e.status === 'PENDING' && Number(e.amount) >= limit) {
-      await this.approvals.requestFor({ type: 'EXTRA_EXPENSE', title: `Expense: ${e.description}`, description: `${e.category} · logged by ${actor.name}`, amount: e.amount, weddingId: e.weddingId, entity: 'Expense', entityId: e.id }, actor).catch(() => undefined);
+    const limit = (await financeLimits(this.prisma)).extraExpense;
+    if (e.status === 'PENDING' && D(e.amount).gte(limit)) {
+      await this.approvals.requestFor({ type: 'EXTRA_EXPENSE', title: `Expense: ${e.description}`, description: `${e.category} · logged by ${actor.name}`, reason: `Expense of ${inr(e.amount)} is at or above the ${inr(limit)} approval limit`, amount: e.amount, weddingId: e.weddingId, entity: 'Expense', entityId: e.id, sourceModule: 'expenses', sourceId: e.id, supportingDocumentId: e.receiptDocumentId }, actor).catch(() => undefined);
     }
     return e;
   }
@@ -48,12 +49,45 @@ export class ExpensesService {
     return e;
   }
 
+  /**
+   * Maker-checker: whoever logged an expense (Finance or Planner included) never decides it. Only PENDING expenses can be decided; a decided
+   * expense is corrected with void() (reversal entry), not re-decided.
+   */
   async decide(id: string, dto: DecideExpenseDto, actor: AuthUser) {
     if (dto.status === 'PENDING') throw new BadRequestException('Decision must be APPROVED or REJECTED');
-    const e = await this.prisma.expense.update({ where: { id }, data: { status: dto.status }, include }).catch(() => { throw new NotFoundException('Expense not found'); });
+    const cur = await this.prisma.expense.findUnique({ where: { id } });
+    if (!cur) throw new NotFoundException('Expense not found');
+    if (cur.reversalOfId) throw new UnprocessableEntityException('A reversal entry cannot be decided');
+    assertDifferentPerson(actor.id, await creatorOf(this.prisma, 'Expense', id), 'you logged this expense, so someone else must approve or reject it');
+    const c = await this.prisma.expense.updateMany({ where: { id, status: 'PENDING' }, data: { status: dto.status } });
+    if (!c.count) throw new ConflictException(`This expense is already ${cur.status.toLowerCase()}`);
+    const e = await this.prisma.expense.findUniqueOrThrow({ where: { id }, include });
     await this.approvals.syncDecision('Expense', id, dto.status as 'APPROVED' | 'REJECTED', actor.id).catch(() => undefined);
-    await this.audit.log({ actorId: actor.id, weddingId: e.weddingId, entity: 'Expense', entityId: id, action: dto.status.toLowerCase(), message: `${dto.status === 'APPROVED' ? 'Approved' : 'Rejected'} expense ${inr(e.amount)} — ${e.description}` });
+    await this.audit.log({ actorId: actor.id, weddingId: e.weddingId, entity: 'Expense', entityId: id, action: dto.status.toLowerCase(), message: `${dto.status === 'APPROVED' ? 'Approved' : 'Rejected'} expense ${inr(e.amount)} — ${e.description}`, meta: { loggedBy: await creatorOf(this.prisma, 'Expense', id) } });
     return e;
+  }
+
+  /** Expenses are never deleted. A pending one is rejected; an approved one gets a reversal entry (the original keeps its history and is excluded from totals). */
+  async void(id: string, reason: string, actor: AuthUser) {
+    const cur = await this.prisma.expense.findUnique({ where: { id } });
+    if (!cur) throw new NotFoundException('Expense not found');
+    if (cur.reversalOfId) throw new UnprocessableEntityException('A reversal entry cannot be voided');
+    if (cur.reversedAt) throw new ConflictException('This expense was already reversed');
+    if (cur.status === 'REJECTED') return this.prisma.expense.findUniqueOrThrow({ where: { id }, include });
+    if (cur.status === 'PENDING') {
+      await this.prisma.expense.updateMany({ where: { id, status: 'PENDING' }, data: { status: 'REJECTED' } });
+      await this.approvals.syncDecision('Expense', id, 'REJECTED', actor.id).catch(() => undefined);
+      await this.audit.log({ actorId: actor.id, weddingId: cur.weddingId, entity: 'Expense', entityId: id, action: 'void', message: `Voided pending expense ${inr(cur.amount)} — ${reason}`, meta: { reason } });
+      return this.prisma.expense.findUniqueOrThrow({ where: { id }, include });
+    }
+    const out = await this.prisma.$transaction(async (tx) => {
+      const claim = await tx.expense.updateMany({ where: { id, reversedAt: null }, data: { reversedAt: new Date() } });
+      if (!claim.count) throw new ConflictException('This expense was already reversed');
+      await tx.expense.create({ data: { weddingId: cur.weddingId, vendorId: cur.vendorId, category: cur.category, description: `Reversal: ${cur.description}`, amount: cur.amount, date: new Date(), method: cur.method, status: 'APPROVED', responsibleId: actor.id, isTeamCost: cur.isTeamCost, reversalOfId: id } });
+      await this.audit.log({ actorId: actor.id, weddingId: cur.weddingId, entity: 'Expense', entityId: id, action: 'reverse', message: `Reversed expense ${inr(cur.amount)} — ${reason}`, meta: { reason } }, tx);
+      return tx.expense.findUniqueOrThrow({ where: { id }, include });
+    });
+    return out;
   }
 
   async setBudget(weddingId: string, dto: SetBudgetDto, actor: AuthUser) {
@@ -66,7 +100,7 @@ export class ExpensesService {
   async summary(weddingId: string) {
     const [lines, expenses, wvs] = await Promise.all([
       this.prisma.budgetLine.findMany({ where: { weddingId } }),
-      this.prisma.expense.groupBy({ by: ['category'], where: { weddingId, status: 'APPROVED' }, _sum: { amount: true } }),
+      this.prisma.expense.groupBy({ by: ['category'], where: { weddingId, status: 'APPROVED', reversalOfId: null, reversedAt: null }, _sum: { amount: true } }),
       this.prisma.weddingVendor.findMany({ where: { weddingId }, select: { id: true, category: true } }),
     ]);
     const actual = new Map<string, Prisma.Decimal>();
@@ -79,7 +113,7 @@ export class ExpensesService {
       const planned = D(lines.find((l) => norm(l.category) === c)?.plannedAmount);
       const act = actual.get(c) ?? D(0);
       return { category: lines.find((l) => norm(l.category) === c)?.category ?? c.replace(/\b\w/g, (m) => m.toUpperCase()), planned: money(planned), actual: money(act), variance: money(act.minus(planned)), overBudget: act.gt(planned) && planned.gt(0) };
-    }).sort((a, b) => Number(b.actual.minus(a.actual)));
+    }).sort(byDesc((r) => r.actual));
     return { rows, totals: { planned: money(sum(rows.map((r) => r.planned))), actual: money(sum(rows.map((r) => r.actual))) } };
   }
 }

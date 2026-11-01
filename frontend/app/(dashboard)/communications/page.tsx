@@ -8,10 +8,10 @@ import { cn } from '@/lib/utils';
 import type { Role } from '@/types';
 
 const TABS: { v: string; l: string; roles: Role[]; create: Role[]; hint: string }[] = [
-  { v: 'CLIENT', l: 'Client messages', roles: ['ADMIN', 'PLANNER', 'EVENT_MANAGER'], create: ['ADMIN', 'PLANNER', 'EVENT_MANAGER'], hint: 'Conversations with couples appear here. Start one from a wedding with New.' },
-  { v: 'VENDOR', l: 'Vendor messages', roles: ['ADMIN', 'PLANNER', 'EVENT_MANAGER', 'OPERATIONS'], create: ['ADMIN', 'PLANNER', 'EVENT_MANAGER'], hint: 'Conversations with vendors appear here.' },
-  { v: 'TEAM', l: 'Team chat', roles: ['ADMIN', 'PLANNER', 'EVENT_MANAGER', 'FINANCE', 'OPERATIONS'], create: ['ADMIN', 'PLANNER', 'EVENT_MANAGER', 'FINANCE', 'OPERATIONS'], hint: 'Internal chat for the whole team.' },
-  { v: 'PLANNER', l: 'Planner ↔ Finance', roles: ['ADMIN', 'PLANNER', 'FINANCE'], create: ['ADMIN', 'PLANNER', 'FINANCE'], hint: 'Questions between planners and finance.' },
+  { v: 'CLIENT', l: 'Client messages', roles: ['FOUNDER', 'PLANNER', 'EVENT_MANAGER'], create: ['FOUNDER', 'PLANNER', 'EVENT_MANAGER'], hint: 'Conversations with couples appear here. Start one from a wedding with New.' },
+  { v: 'VENDOR', l: 'Vendor messages', roles: ['FOUNDER', 'PLANNER', 'EVENT_MANAGER', 'OPERATIONS'], create: ['FOUNDER', 'PLANNER', 'EVENT_MANAGER'], hint: 'Conversations with vendors appear here.' },
+  { v: 'TEAM', l: 'Team chat', roles: ['FOUNDER', 'PLANNER', 'EVENT_MANAGER', 'FINANCE', 'OPERATIONS'], create: ['FOUNDER', 'PLANNER', 'EVENT_MANAGER', 'FINANCE', 'OPERATIONS'], hint: 'Internal chat for the whole team.' },
+  { v: 'PLANNER', l: 'Planner ↔ Finance', roles: ['FOUNDER', 'PLANNER', 'FINANCE'], create: ['FOUNDER', 'PLANNER', 'FINANCE'], hint: 'Questions between planners and finance.' },
 ];
 
 export default function CommunicationsPage() {

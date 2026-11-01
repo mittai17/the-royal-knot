@@ -19,7 +19,7 @@ export function TaskDetail({ task, all, onClose, onSaved }: { task: Task | null;
     setBusy(true);
     try { await api.patch(`/tasks/${task.id}`, body); notify.ok(msg); onSaved(); } catch (e) { notify.err(e); } finally { setBusy(false); }
   };
-  const blockers = (task?.dependsOn ?? []).map((d) => all.find((t) => t.id === d.dependsOnId)).filter((t): t is Task => !!t && t.status !== 'COMPLETED');
+  const blockers = (task?.dependsOn ?? []).map((d) => all.find((t) => t.id === d.dependsOnId)).filter((t): t is Task => !!t && t.status !== 'DONE');
 
   return (
     <Modal open={!!task} onClose={onClose} title={task?.name ?? ''} side width="max-w-lg">
@@ -36,7 +36,7 @@ export function TaskDetail({ task, all, onClose, onSaved }: { task: Task | null;
           </div>
           <p className="text-xs text-ink-soft">Vendor: {task.weddingVendor?.vendor?.name ?? '—'} · Due {fmtDate(task.dueDate)}{task.completedAt ? ` · Completed ${fmtDate(task.completedAt)}` : ''}</p>
           <Field label="Completion evidence"><textarea className="input min-h-[72px]" defaultValue={task.evidenceNote ?? ''} onChange={(e) => setEvidence(e.target.value)} placeholder="Link, confirmation note or what was delivered…" /></Field>
-          <div className="flex justify-end gap-2"><button className="btn-secondary" disabled={busy} onClick={() => patch({ evidenceNote: evidence }, 'Evidence saved')}>Save evidence</button><button className="btn-primary" disabled={busy || task.status === 'COMPLETED'} onClick={() => patch({ status: 'COMPLETED', evidenceNote: evidence || task.evidenceNote || undefined }, 'Task completed')}>{busy && <Loader2 className="h-4 w-4 animate-spin" />}Mark complete</button></div>
+          <div className="flex justify-end gap-2"><button className="btn-secondary" disabled={busy} onClick={() => patch({ evidenceNote: evidence }, 'Evidence saved')}>Save evidence</button><button className="btn-primary" disabled={busy || task.status === 'DONE'} onClick={() => patch({ status: 'DONE', evidenceNote: evidence || task.evidenceNote || undefined }, 'Task completed')}>{busy && <Loader2 className="h-4 w-4 animate-spin" />}Mark complete</button></div>
         </div>
       )}
     </Modal>

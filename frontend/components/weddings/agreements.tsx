@@ -47,7 +47,7 @@ export function Agreements({ weddingId, defaultSigner }: { weddingId: string; de
               <StatusBadge status={a.status} />
               <button className="btn-ghost btn-sm" onClick={() => setView(a)}>View</button>
               <a className="btn-ghost btn-sm" href={apiUrl(`/agreements/${a.id}/pdf`)} target="_blank" rel="noreferrer"><FileDown className="h-4 w-4" />PDF</a>
-              {a.status !== 'SIGNED' && a.status !== 'VOID' && <Can roles={G.CRM}><button className="btn-secondary btn-sm" onClick={() => setSigning(a)}>Capture signature</button></Can>}
+              {a.status !== 'SIGNED' && a.status !== 'EXPIRED' && a.status !== 'REJECTED' && <Can roles={G.CRM}><button className="btn-secondary btn-sm" onClick={() => setSigning(a)}>Capture signature</button></Can>}
             </li>
           ))}
         </ul>

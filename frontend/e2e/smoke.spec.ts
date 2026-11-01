@@ -4,7 +4,7 @@ const EMAIL = process.env.E2E_EMAIL ?? 'founder@royalknot.local';
 const PASSWORD = process.env.E2E_PASSWORD ?? 'RoyalKnot@2026';
 
 const SCREENS: [string, string][] = [
-  ['dashboard', 'Ongoing Weddings'], ['enquiries', 'Enquiries'], ['weddings', 'Weddings'], ['vendors', 'Vendors'], ['quotations', 'Quotations'],
+  ['dashboard', 'Ongoing Weddings'], ['enquiries', 'Enquiries'], ['weddings', 'Weddings'], ['vendors', 'Vendors'], ['procurement', 'Procurement'],
   ['tasks', 'Planning & Tasks'], ['command-centre', 'Event Command Centre'], ['guests', 'Guests'], ['payments', 'Payments'],
   ['expenses', 'Expenses & Reconciliation'], ['reports', 'Reports & Analytics'], ['documents', 'Documents'], ['team', 'Team Management'], ['settings', 'Settings'],
 ];
@@ -42,6 +42,15 @@ test('every screen loads real data without API errors', async ({ page }) => {
   expect(failures).toEqual([]);
 });
 
+test('legacy routes redirect to their canonical modules (decision 8)', async ({ page }) => {
+  await login(page);
+  const map: [string, RegExp][] = [
+    ['/todays-events', /\/command-centre\?view=today/], ['/vendor-checkin', /\/command-centre\/vendor-checkin/], ['/checklists', /\/tasks\?view=checklists/],
+    ['/updates', /\/activity/], ['/quotations', /\/procurement\?tab=rfqs/],
+  ];
+  for (const [from, to] of map) { await page.goto(from); await expect(page).toHaveURL(to); }
+});
+
 test('quotation comparison highlights options and keeps the decision', async ({ page }) => {
   await login(page);
   const mehta = (await (await page.request.get('/api/v1/weddings?search=Mehta')).json()).data[0];
@@ -49,7 +58,7 @@ test('quotation comparison highlights options and keeps the decision', async ({ 
   await page.locator('ul li button').first().click();
   await expect(page.getByText('Lowest total', { exact: true })).toBeVisible();
   await expect(page.getByText('Recommended', { exact: true })).toBeVisible();
-  await expect(page.getByText('Selected', { exact: true })).toBeVisible();
+  await expect(page.getByText('Selected', { exact: true }).first()).toBeVisible();
   await expect(page.getByText('Not selected', { exact: true })).toHaveCount(2);
 });
 

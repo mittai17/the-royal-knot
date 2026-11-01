@@ -104,7 +104,7 @@ Dokploy project **odoo** (environment `production`) contains two compose apps:
 
 Notes:
 - Postgres, Redis and the MinIO S3 API publish **no host ports**; only Traefik-routed UIs are reachable.
-- Keycloak 26.4 runs `start --import-realm` against its own database. The imported realm `royalknot` has realm roles `founder_admin`, `wedding_planner`, `event_manager`, `finance_manager`, `operations_staff` (mapping to the app roles ADMIN, PLANNER, EVENT_MANAGER, FINANCE, OPERATIONS) and a public PKCE client `royalknot-web`.
+- Keycloak 26.4 runs `start --import-realm` against its own database. The imported realm `royalknot` has realm roles `founder_admin`, `wedding_planner`, `event_manager`, `finance_manager`, `operations_staff` (mapping to the app roles FOUNDER, PLANNER, EVENT_MANAGER, FINANCE, OPERATIONS) and a public PKCE client `royalknot-web`.
 - **Keycloak is optional.** The Royal Knot app keeps its built-in authentication (Argon2 + JWT cookies); it is not wired to Keycloak.
 - Adminer joins the `royalknot` internal network, so both `keycloak-db` and the app database (`postgres`) can be opened from it. Override the network name with `ROYALKNOT_INTERNAL_NETWORK` if the Dokploy app name changes.
 - Secrets (`KEYCLOAK_ADMIN_PASSWORD`, `KEYCLOAK_DB_PASSWORD`, `MAILPIT_UI_AUTH`) live only in Dokploy's environment for each app; the generated values are in `~/.odoo-stack-credentials` on the host (not in the repo). `*.localhost` resolves to 127.0.0.1 in browsers; on other machines add hosts entries or real DNS.

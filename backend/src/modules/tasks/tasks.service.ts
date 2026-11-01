@@ -1,6 +1,9 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, Role, UserStatus } from '@prisma/client';
 import { AuthUser } from '../../common/decorators';
+import { ScopeService } from '../../common/scope.service';
+import { assertTransition, isTaskOverdue, TASK_TRANSITIONS } from '../../common/state-machines';
+import { DAY_OF_KEYS, DEFAULT_TEMPLATES, FULL_SERVICE_TEMPLATE_NAME, PARTIAL_TEMPLATE_NAME } from './default-templates';
 import { orderBy, Paginated, skipTake } from '../../common/pagination';
 import { PrismaService } from '../../database/prisma.service';
 import { RealtimeService } from '../../websocket/realtime.service';
@@ -13,22 +16,40 @@ const include = { owner: { select: { id: true, name: true, role: true } }, weddi
 
 @Injectable()
 export class TasksService {
-  constructor(private prisma: PrismaService, private audit: AuditService, private rt: RealtimeService, private notif: NotificationsService) {}
+  constructor(private prisma: PrismaService, private audit: AuditService, private rt: RealtimeService, private notif: NotificationsService, private scope: ScopeService) {}
+
+  /** "Overdue" is derived (not stored): any task that is not DONE and past its due date. */
+  private shape<T extends { status: 'TO_PLAN' | 'IN_PROGRESS' | 'DONE' | 'BLOCKED'; dueDate: Date }>(t: T) { return { ...t, overdue: isTaskOverdue(t) }; }
+
+  /** Seed-independent: makes sure the default templates (Full-Service, Partial / Day-of scoped) exist in the task-template tables. Idempotent. */
+  async ensureDefaultTemplates() {
+    for (const t of DEFAULT_TEMPLATES) {
+      if (await this.prisma.taskTemplate.findUnique({ where: { name: t.name }, select: { id: true } })) continue;
+      await this.prisma.taskTemplate.create({ data: { name: t.name, isDefault: true, items: { create: t.items.map((i, idx) => ({ ...i, sortOrder: idx })) } } }).catch((e) => { if (e?.code !== 'P2002') throw e; }); // lost a race: someone else created it
+    }
+  }
 
   /**
-   * Idempotent: (weddingId, templateKey) is unique and rows are inserted with skipDuplicates,
-   * so repeated triggers (booking payment recorded twice, manual re-run) never duplicate tasks.
+   * Auto-planning (master spec decision 5): only for a CONFIRMED booking (agreement signed + proposal accepted + deposit verified);
+   * `WeddingsService.confirm` is the one caller. Full-Service gets the full checklist (>= 26 tasks), Partial a reduced scoped set
+   * (and `subtype: 'DAY_OF'` the day-of subset). Idempotent: (weddingId, templateKey) is unique and rows are inserted with skipDuplicates,
+   * so repeated triggers (confirm called twice, manual re-run) never duplicate tasks.
    */
   async generate(weddingId: string, dto: GenerateTasksDto = {}, actor?: AuthUser) {
     const wedding = await this.prisma.wedding.findUnique({ where: { id: weddingId }, include: { events: true, weddingVendors: true } });
     if (!wedding) throw new NotFoundException('Wedding not found');
-    const template = dto.templateId
-      ? await this.prisma.taskTemplate.findUnique({ where: { id: dto.templateId }, include: { items: { orderBy: { sortOrder: 'asc' } } } })
-      : await this.prisma.taskTemplate.findFirst({ where: { name: wedding.packageType === 'FULL_SERVICE' ? 'Full-Service Wedding Checklist' : 'Day-of Management Checklist' }, include: { items: { orderBy: { sortOrder: 'asc' } } } });
+    if (actor) await this.scope.assertWeddingAccess(actor, weddingId); // IDOR: staff can only generate for assigned weddings (system callers pass no actor)
+    if (wedding.bookingStatus !== 'CONFIRMED') throw new ConflictException({ message: 'Planning tasks are generated only once the booking is confirmed (agreement signed, proposal accepted, deposit verified)', code: 'BOOKING_NOT_CONFIRMED' });
+    await this.ensureDefaultTemplates();
+    const template = await this.prisma.taskTemplate.findUnique({ where: dto.templateId ? { id: dto.templateId } : { name: wedding.packageType === 'FULL_SERVICE' ? FULL_SERVICE_TEMPLATE_NAME : PARTIAL_TEMPLATE_NAME }, include: { items: { orderBy: { sortOrder: 'asc' } } } });
     if (!template) throw new BadRequestException('No task template found');
+    if (dto.subtype === 'DAY_OF') {
+      if (wedding.packageType !== 'PARTIAL') throw new BadRequestException('The Day-of subtype applies to Partial packages only');
+      template.items = template.items.filter((i) => DAY_OF_KEYS.has(i.key));
+    }
 
     const staff = await this.prisma.user.findMany({ where: { status: UserStatus.ACTIVE, available: true }, select: { id: true, role: true } });
-    const load = new Map((await this.prisma.weddingTask.groupBy({ by: ['ownerId'], where: { status: { not: 'COMPLETED' } }, _count: true })).map((g) => [g.ownerId, g._count]));
+    const load = new Map((await this.prisma.weddingTask.groupBy({ by: ['ownerId'], where: { status: { not: 'DONE' } }, _count: true })).map((g) => [g.ownerId, g._count]));
     const owner = (role: Role) => {
       if (role === 'PLANNER' && wedding.plannerId) return wedding.plannerId;
       const c = staff.filter((s) => s.role === role).sort((a, b) => (load.get(a.id) ?? 0) - (load.get(b.id) ?? 0))[0];
@@ -56,14 +77,17 @@ export class TasksService {
     });
     const total = await this.prisma.weddingTask.count({ where: { weddingId } });
     if (created > 0) await this.notif.notify({ type: 'tasks.generated', title: 'Planning checklist generated', body: `${created} tasks created for ${wedding.name}`, link: `/weddings/${weddingId}?tab=planning`, roles: ['PLANNER', 'EVENT_MANAGER'] });
-    return { created, skipped: template.items.length - created, total, template: template.name };
+    return { created, skipped: template.items.length - created, total, template: template.name, subtype: dto.subtype ?? null };
   }
 
   async list(q: TaskQuery, user: AuthUser, weddingId?: string) {
     const now = new Date();
+    const wid = weddingId ?? q.weddingId;
+    if (wid) await this.scope.assertWeddingAccess(user, wid);
     const where: Prisma.WeddingTaskWhereInput = {
-      ...(weddingId ?? q.weddingId ? { weddingId: weddingId ?? q.weddingId } : {}), ...(q.status ? { status: q.status } : {}), ...(q.category ? { category: q.category } : {}),
-      ...(q.mine ? { ownerId: user.id } : q.ownerId ? { ownerId: q.ownerId } : {}), ...(q.overdue ? { status: { not: 'COMPLETED' }, dueDate: { lt: now } } : {}),
+      AND: [this.scope.taskWhere(user)], // staff by assignment (OPERATIONS: own tasks only)
+      ...(wid ? { weddingId: wid } : {}), ...(q.status ? { status: q.status } : {}), ...(q.category ? { category: q.category } : {}),
+      ...(q.mine ? { ownerId: user.id } : q.ownerId ? { ownerId: q.ownerId } : {}), ...(q.overdue ? { status: { not: 'DONE' }, dueDate: { lt: now } } : {}),
       ...(q.from || q.to ? { dueDate: { ...(q.from ? { gte: new Date(q.from) } : {}), ...(q.to ? { lte: new Date(q.to) } : {}) } } : {}),
       ...(q.search ? { name: { contains: q.search, mode: 'insensitive' } } : {}),
     };
@@ -71,33 +95,36 @@ export class TasksService {
       this.prisma.weddingTask.findMany({ where, include: { ...include, wedding: { select: { id: true, name: true } } }, orderBy: orderBy({ ...q, order: q.order ?? 'asc' } as TaskQuery, ['dueDate', 'priority', 'status', 'name', 'createdAt'], 'dueDate'), ...skipTake(q) }),
       this.prisma.weddingTask.count({ where }),
     ]);
-    return new Paginated(items, { page: q.page, pageSize: q.pageSize, total });
+    return new Paginated(items.map((t) => this.shape(t)), { page: q.page, pageSize: q.pageSize, total });
   }
 
   async create(weddingId: string, dto: CreateTaskDto, actor: AuthUser) {
+    await this.scope.assertWeddingAccess(actor, weddingId);
     const { dependsOnIds, dueDate, ...rest } = dto;
     const t = await this.prisma.weddingTask.create({ data: { ...rest, weddingId, description: dto.description ?? '', dueDate: new Date(dueDate), ownerId: dto.ownerId ?? actor.id, ...(dependsOnIds?.length ? { dependsOn: { create: dependsOnIds.map((dependsOnId) => ({ dependsOnId })) } } : {}) }, include });
     await this.audit.log({ actorId: actor.id, weddingId, entity: 'WeddingTask', entityId: t.id, action: 'create', message: `Added task "${t.name}"` });
     this.rt.toWedding(weddingId, 'task.updated', t);
-    return t;
+    return this.shape(t);
   }
 
   async update(id: string, dto: UpdateTaskDto, actor: AuthUser) {
     const prev = await this.prisma.weddingTask.findUnique({ where: { id }, include: { dependsOn: { include: { dependsOn: { select: { name: true, status: true } } } } } });
     if (!prev) throw new NotFoundException('Task not found');
-    if (dto.status === 'COMPLETED' && prev.status !== 'COMPLETED') {
-      const open = prev.dependsOn.filter((d) => d.dependsOn.status !== 'COMPLETED');
+    await this.scope.assertTaskAccess(actor, id);
+    if (dto.status) assertTransition('Task', TASK_TRANSITIONS, prev.status, dto.status, { allowSame: true });
+    if (dto.status === 'DONE' && prev.status !== 'DONE') {
+      const open = prev.dependsOn.filter((d) => d.dependsOn.status !== 'DONE');
       if (open.length) throw new ConflictException({ message: `Blocked by unfinished tasks: ${open.map((d) => d.dependsOn.name).join(', ')}`, details: open.map((d) => d.dependsOn.name) });
     }
     const t = await this.prisma.weddingTask.update({
       where: { id },
-      data: { ...dto, ...(dto.dueDate ? { dueDate: new Date(dto.dueDate) } : {}), ...(dto.status ? { completedAt: dto.status === 'COMPLETED' ? new Date() : null } : {}) },
+      data: { ...dto, ...(dto.dueDate ? { dueDate: new Date(dto.dueDate) } : {}), ...(dto.status && dto.status !== prev.status ? { completedAt: dto.status === 'DONE' ? new Date() : null } : {}) },
       include,
     });
     await this.audit.log({ actorId: actor.id, weddingId: t.weddingId, entity: 'WeddingTask', entityId: id, action: 'update', message: dto.status && dto.status !== prev.status ? `"${t.name}" ${prev.status} → ${dto.status}` : `Updated task "${t.name}"`, meta: { fields: Object.keys(dto) } });
     this.rt.toWedding(t.weddingId, 'task.updated', t);
     if (dto.ownerId && dto.ownerId !== prev.ownerId && dto.ownerId !== actor.id) await this.notif.notify({ type: 'task.assigned', title: 'Task assigned to you', body: t.name, link: `/weddings/${t.weddingId}?tab=planning`, userIds: [dto.ownerId], roles: [] });
-    return t;
+    return this.shape(t);
   }
 
   // ---- reusable templates ----

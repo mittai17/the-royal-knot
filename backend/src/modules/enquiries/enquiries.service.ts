@@ -4,6 +4,7 @@ import { AuthUser } from '../../common/decorators';
 import { D } from '../../common/finance';
 import { orderBy, Paginated, skipTake } from '../../common/pagination';
 import { PrismaService } from '../../database/prisma.service';
+import { assertTransition, ENQUIRY_TRANSITIONS } from '../../common/state-machines';
 import { AuditService } from '../audit/audit.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { WeddingsService } from '../weddings/weddings.service';
@@ -30,7 +31,7 @@ export class EnquiriesService {
   async list(q: EnquiryQuery) {
     const where: Prisma.EnquiryWhereInput = {
       ...(q.stage ? { stage: q.stage } : {}), ...(q.source ? { source: q.source } : {}), ...(q.assignedToId ? { assignedToId: q.assignedToId } : {}),
-      ...(q.followUpDue ? { followUpAt: { lte: new Date() }, stage: { notIn: ['CONFIRMED', 'LOST'] } } : {}),
+      ...(q.followUpDue ? { followUpAt: { lte: new Date() }, stage: { notIn: ['CONVERTED', 'LOST'] } } : {}),
       ...(q.search ? { OR: [{ location: { contains: q.search, mode: 'insensitive' } }, { notes: { contains: q.search, mode: 'insensitive' } }, { couple: { OR: [{ brideName: { contains: q.search, mode: 'insensitive' } }, { groomName: { contains: q.search, mode: 'insensitive' } }, { phone: { contains: q.search } }] } }] } : {}),
     };
     const [items, total] = await Promise.all([
@@ -42,7 +43,7 @@ export class EnquiriesService {
 
   async pipeline() {
     const g = await this.prisma.enquiry.groupBy({ by: ['stage'], _count: true, _sum: { budget: true } });
-    const due = await this.prisma.enquiry.count({ where: { followUpAt: { lte: new Date() }, stage: { notIn: ['CONFIRMED', 'LOST'] } } });
+    const due = await this.prisma.enquiry.count({ where: { followUpAt: { lte: new Date() }, stage: { notIn: ['CONVERTED', 'LOST'] } } });
     return { stages: Object.values(EnquiryStage).map((s) => ({ stage: s, count: g.find((x) => x.stage === s)?._count ?? 0, budget: g.find((x) => x.stage === s)?._sum.budget ?? 0 })), followUpsDue: due };
   }
 
@@ -54,8 +55,9 @@ export class EnquiriesService {
 
   async update(id: string, dto: UpdateEnquiryDto, actor: AuthUser) {
     const prev = await this.get(id);
-    if (prev.convertedWeddingId && dto.stage && dto.stage !== 'CONFIRMED') throw new ConflictException('Converted enquiries stay Confirmed');
-    if (dto.stage === 'CONFIRMED' && !prev.convertedWeddingId) throw new BadRequestException('Use the convert action to confirm an enquiry — it creates the wedding');
+    if (prev.convertedWeddingId && dto.stage && dto.stage !== 'CONVERTED') throw new ConflictException('Converted enquiries stay Confirmed');
+    if (dto.stage === 'CONVERTED' && !prev.convertedWeddingId) throw new BadRequestException('Use the convert action to confirm an enquiry — it creates the wedding');
+    if (dto.stage) assertTransition('Enquiry', ENQUIRY_TRANSITIONS, prev.stage, dto.stage, { allowSame: true });
     const { brideName, groomName, phone, email, preferredDate, followUpAt, assignedToId, ...rest } = dto;
     const acts: { type: string; message: string }[] = [];
     if (dto.stage && dto.stage !== prev.stage) acts.push({ type: 'stage', message: `Stage ${prev.stage} → ${dto.stage}${dto.lostReason ? ` (${dto.lostReason})` : ''}` });
@@ -75,11 +77,16 @@ export class EnquiriesService {
     return this.prisma.enquiryActivity.create({ data: { enquiryId: id, actorId: actor.id, type, message } });
   }
 
-  /** Atomically creates the wedding (+couple link, events, milestones) and closes the enquiry as CONFIRMED. */
+  /**
+   * Atomically creates the wedding workspace (+couple link, events, milestones) and closes the lead as CONVERTED.
+   * The wedding is a DRAFT (bookingStatus DRAFT, executionStage INITIAL_PHASE): not a booking, not counted in revenue or stats, no tasks yet.
+   * It becomes CONFIRMED only through WeddingsService.confirm().
+   */
   async convert(id: string, dto: ConvertEnquiryDto, actor: AuthUser) {
     const e = await this.get(id);
     if (e.convertedWeddingId) throw new ConflictException('Enquiry already converted');
     if (e.stage === 'LOST') throw new BadRequestException('Reopen a lost enquiry before converting it');
+    if (e.stage === 'CONVERTED') throw new ConflictException('Enquiry already converted');
     const start = dto.startDate ?? e.preferredDate?.toISOString();
     if (!start) throw new BadRequestException('startDate is required (enquiry has no preferred date)');
     const wedding = await this.prisma.$transaction(async (tx) => {
@@ -88,7 +95,7 @@ export class EnquiriesService {
         expectedGuests: dto.expectedGuests ?? e.guestCount ?? 0, packageType: e.packageType, budget: D(e.budget).toNumber(), contractValue: dto.contractValue ?? D(e.budget).toNumber(),
         plannerId: dto.plannerId ?? e.assignedToId ?? actor.id, theme: e.theme ?? undefined,
       }, { enquiryId: e.id });
-      await tx.enquiry.update({ where: { id }, data: { stage: 'CONFIRMED', convertedWeddingId: w.id, activities: { create: { type: 'converted', actorId: actor.id, message: `Converted to wedding "${w.name}"` } } } });
+      await tx.enquiry.update({ where: { id }, data: { stage: 'CONVERTED', convertedWeddingId: w.id, activities: { create: { type: 'converted', actorId: actor.id, message: `Converted to wedding "${w.name}"` } } } });
       await this.audit.log({ actorId: actor.id, weddingId: w.id, entity: 'Enquiry', entityId: id, action: 'convert', message: `Enquiry converted to wedding ${w.name}` }, tx);
       return w;
     });

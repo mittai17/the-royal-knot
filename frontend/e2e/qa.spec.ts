@@ -1,7 +1,7 @@
 import { test } from '@playwright/test';
 import fs from 'fs';
 
-const pages = ['dashboard', 'enquiries', 'weddings', 'vendors', 'quotations', 'tasks', 'command-centre', 'guests', 'payments', 'expenses', 'reports', 'documents', 'team', 'settings'];
+const pages = ['dashboard', 'enquiries', 'weddings', 'vendors', 'procurement', 'tasks', 'command-centre', 'guests', 'payments', 'expenses', 'reports', 'documents', 'team', 'settings'];
 const tabs = ['Overview', 'Couple', 'Planning', 'Events', 'Vendors', 'Quotations', 'Guests', 'Payments', 'Expenses', 'Documents', 'Activity'];
 const vps = [{ n: 'desk', w: 1440, h: 900 }, { n: 'tab', w: 820, h: 1100 }, { n: 'mob', w: 390, h: 844 }];
 const users = (process.env.QA_USERS ?? 'founder').split(',');

@@ -14,7 +14,7 @@ import { notify } from '@/lib/toast';
 import type { Guest } from '@/types';
 
 const BASE = '/portal/client';
-interface Stats { weddingExpected: number; invitedHeadcount: number; guests: number; confirmed: number; declined: number; maybe: number; pending: number; groups: { group: string; count: number }[] }
+interface Stats { weddingExpected: number; invitedHeadcount: number; guests: number; confirmed: number; declined: number; pending: number; groups: { group: string; count: number }[] }
 
 function GuestForm({ open, onClose, onSaved }: { open: boolean; onClose: () => void; onSaved: () => void }) {
   const blank = { name: '', phone: '', email: '', groupName: '', category: '', plusOnes: '0', dietary: '', accommodationNeeded: false };
@@ -115,7 +115,7 @@ export default function Page() {
         <StatCard label="Invited (heads)" value={st?.invitedHeadcount ?? '—'} hint={`${st?.guests ?? 0} invitations · target ${st?.weddingExpected ?? '—'}`} />
         <StatCard label="Confirmed" value={st?.confirmed ?? '—'} hint="RSVP yes, incl. accompanying" />
         <StatCard label="Declined" value={st?.declined ?? '—'} />
-        <StatCard label="Awaiting reply" value={st ? st.pending + st.maybe : '—'} hint={`${st?.maybe ?? 0} maybe`} />
+        <StatCard label="Awaiting reply" value={st ? st.pending : '—'} />
       </div>
       <Card pad={false}>
         <div className="flex flex-wrap items-center gap-3 p-4 border-b border-line">

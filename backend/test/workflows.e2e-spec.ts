@@ -45,6 +45,14 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await prisma.weddingVendor.updateMany({ where: { weddingId: { in: created.weddings } }, data: {} });
+  // posted financial records are RESTRICTed against wedding deletion: clear them first (test data only, direct DB access)
+  { const wid = { in: created.weddings };
+    await prisma.vendorBillPayment.deleteMany({ where: { bill: { weddingId: wid } } });
+    await prisma.vendorPayment.deleteMany({ where: { weddingId: wid } });
+    await prisma.vendorBill.deleteMany({ where: { weddingId: wid } });
+    await prisma.clientPayment.deleteMany({ where: { weddingId: wid } });
+    await prisma.clientInvoice.deleteMany({ where: { weddingId: wid } });
+    await prisma.additionalCharge.deleteMany({ where: { reconciliation: { weddingId: wid } } }); }
   await prisma.wedding.deleteMany({ where: { id: { in: created.weddings } } });
   await prisma.enquiry.deleteMany({ where: { id: { in: created.enquiries } } });
   await prisma.couple.deleteMany({ where: { id: { in: created.couples } } });
@@ -131,7 +139,7 @@ describe('2. enquiry → wedding', () => {
     expect(due.body.data.some((e: any) => e.id === enquiryId)).toBe(true);
   });
   it('refuses to confirm without converting, then converts atomically', async () => {
-    await agents.neha.patch(`/api/v1/enquiries/${enquiryId}`).send({ stage: 'CONFIRMED' }).expect(400);
+    await agents.neha.patch(`/api/v1/enquiries/${enquiryId}`).send({ stage: 'CONVERTED' }).expect(400);
     await agents.neha.patch(`/api/v1/enquiries/${enquiryId}`).send({ stage: 'PROPOSAL_SENT' }).expect(200);
     const start = new Date(Date.now() + 90 * 864e5).toISOString();
     const r = await agents.neha.post(`/api/v1/enquiries/${enquiryId}/convert`).send({ name: `${RUN} Wedding`, venue: 'Jaipur Palace', startDate: start, contractValue: 13500000, expectedGuests: 400 }).expect(201);
@@ -141,7 +149,7 @@ describe('2. enquiry → wedding', () => {
     const m = Object.fromEntries(d(r).finance.milestones.map((x: any) => [x.type, Number(x.expectedAmount)]));
     expect(m.BOOKING + m.ADVANCE + m.FINAL).toBe(13500000);
     const after = d(await agents.neha.get(`/api/v1/enquiries/${enquiryId}`));
-    expect(after.stage).toBe('CONFIRMED');
+    expect(after.stage).toBe('CONVERTED');
     expect(after.convertedWeddingId).toBe(weddingId);
     await agents.neha.post(`/api/v1/enquiries/${enquiryId}/convert`).send({}).expect(409);
   });
@@ -157,7 +165,7 @@ describe('3. digital agreement', () => {
     const v2 = d(await agents.neha.post(`/api/v1/weddings/${weddingId}/agreements`).send({}).expect(201));
     expect(v2.version).toBe(2);
     const list = d(await agents.neha.get(`/api/v1/weddings/${weddingId}/agreements`));
-    expect(list.find((a: any) => a.id === agreementId).status).toBe('VOID'); // superseded, history preserved
+    expect(list.find((a: any) => a.id === agreementId).status).toBe('EXPIRED'); // superseded, history preserved
     agreementId = v2.id;
   });
   it('rejects non-PNG signatures and captures a valid signature, storing the signed PDF', async () => {
@@ -177,7 +185,9 @@ const item = (name: string, qty: number, price: number, tax = 5, extra: any = {}
 
 describe('4. vendor quotation comparison & selection', () => {
   it('requires at least three vendors', async () => {
-    caterers = d(await agents.neha.get('/api/v1/vendors?category=CATERING&pageSize=10')).slice(0, 4);
+    // the vendor list order is not stable across row rewrites, so pick the four seeded caterers explicitly (cheapest/over-capacity first, best-rated last)
+    const ORDER = ['Spice Route Caterers', 'Maharaja Feast Co.', 'Royal Caterers', 'Lake Palace Kitchens'];
+    caterers = d(await agents.neha.get('/api/v1/vendors?category=CATERING&pageSize=50')).filter((v: any) => ORDER.includes(v.name)).sort((x: any, y: any) => ORDER.indexOf(x.name) - ORDER.indexOf(y.name));
     await agents.neha.post('/api/v1/quotations/requests').send({ weddingId, category: 'CATERING', title: 'x', vendorIds: caterers.slice(0, 2).map((v) => v.id) }).expect(400);
     await agents.neha.post('/api/v1/quotations/requests').send({ weddingId, category: 'DECORATION', title: 'wrong category', vendorIds: caterers.slice(0, 3).map((v) => v.id) }).expect(400);
   });
@@ -214,7 +224,7 @@ describe('4. vendor quotation comparison & selection', () => {
     expect(d(r).closedRequests).toBe(2);
     const cmp = d(await agents.neha.get(`/api/v1/weddings/${weddingId}/quotation-comparison?rfqGroup=${rfqGroup}`));
     const statuses = cmp.quotations.map((q: any) => `${q.requestStatus}/${q.status}`).sort();
-    expect(statuses).toEqual(['ACCEPTED/ACCEPTED', 'NOT_SELECTED/REJECTED', 'NOT_SELECTED/REJECTED']);
+    expect(statuses).toEqual(['CLOSED/REJECTED', 'CLOSED/REJECTED', 'SELECTED/SELECTED']);
     expect(cmp.decided).toBe(true);
     const wvs = d(await agents.neha.get(`/api/v1/weddings/${weddingId}/vendors`));
     expect(wvs).toHaveLength(1);
@@ -228,6 +238,8 @@ describe('4. vendor quotation comparison & selection', () => {
   it('only one of two concurrent selections can win', async () => {
     const raceWedding = d(await agents.neha.post('/api/v1/weddings').send({ brideName: 'Race Bride', groomName: `${RUN} Race`, location: 'Jaipur', startDate: new Date(Date.now() + 60 * 864e5).toISOString(), expectedGuests: 100, packageType: 'PARTIAL', budget: 1000000, contractValue: 900000 }).expect(201));
     created.weddings.push(raceWedding.id); created.couples.push(raceWedding.coupleId);
+    const raceAgr = d(await agents.neha.post(`/api/v1/weddings/${raceWedding.id}/agreements`).send({}).expect(201));
+    await agents.neha.post(`/api/v1/agreements/${raceAgr.id}/sign`).send({ signerName: 'Race Client', signerRole: 'CLIENT', signatureData: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==' }).expect(201); // RFQs go out only after the agreement is signed
     const r = d(await agents.neha.post('/api/v1/quotations/requests').send({ weddingId: raceWedding.id, category: 'CATERING', title: `${RUN} race`, vendorIds: caterers.slice(0, 3).map((v) => v.id) }).expect(201));
     const qs: string[] = [];
     for (const req of r.requests.slice(0, 2)) qs.push(d(await agents.neha.post(`/api/v1/quotations/requests/${req.id}/quotation`).send({ guests: 400, items: [item('Plate', 400, 1000)] }).expect(201)).id);
@@ -235,7 +247,7 @@ describe('4. vendor quotation comparison & selection', () => {
     const results = await Promise.all(qs.map((id) => agents.neha.post(`/api/v1/quotations/${id}/select`).send({})));
     expect(results.map((x) => x.status).sort()).toEqual([201, 409]);
     expect(await prisma.weddingVendor.count({ where: { weddingId: raceWedding.id } })).toBe(1);
-    const accepted = await prisma.quotationRequest.count({ where: { rfqGroup: r.rfqGroup, status: 'ACCEPTED' } });
+    const accepted = await prisma.quotationRequest.count({ where: { rfqGroup: r.rfqGroup, status: 'SELECTED' } });
     expect(accepted).toBe(1);
   });
 });
@@ -253,14 +265,29 @@ describe('5. staged client payments & automatic planning', () => {
     await agents.meera.post('/api/v1/payments').send({ weddingId, milestone: 'BOOKING', amount: -5, method: 'UPI', idempotencyKey: key('neg') }).expect(400);
     await agents.neha.post('/api/v1/payments').send({ weddingId, milestone: 'BOOKING', amount: 100, method: 'UPI', idempotencyKey: key('role') }).expect(403);
   });
-  it('records the booking payment, issues a receipt and generates >25 tasks', async () => {
+  it('records the booking payment and issues a receipt; a payment alone never generates tasks or confirms the booking', async () => {
     const r = await agents.meera.post('/api/v1/payments').send({ weddingId, milestone: 'BOOKING', amount: bookingExpected, method: 'BANK_TRANSFER', reference: 'NEFT-TEST', idempotencyKey: key('booking') }).expect(201);
     expect(d(r).duplicate).toBe(false);
     expect(d(r).milestoneStatus).toBe('PAID');
-    expect(d(r).tasksGenerated.created).toBeGreaterThan(25);
     expect(d(r).payment.receiptNo).toMatch(/^RK-\d{8}-[0-9A-F]{6}$/);
+    expect(await prisma.weddingTask.count({ where: { weddingId } })).toBe(0); // draft workspace: no auto-planning yet
+    expect((await prisma.wedding.findUniqueOrThrow({ where: { id: weddingId } })).bookingStatus).not.toBe('CONFIRMED');
     const rcpt = await agents.meera.get(`/api/v1/payments/${d(r).payment.id}/receipt`).buffer(true).parse((res, cb) => { const c: Buffer[] = []; res.on('data', (x: Buffer) => c.push(x)); res.on('end', () => cb(null, Buffer.concat(c))); }).expect(200);
     expect((rcpt.body as Buffer).subarray(0, 4).toString()).toBe('%PDF');
+  });
+  it('confirms once agreement is signed + final proposal accepted + deposit verified, then generates >25 tasks', async () => {
+    await agents.neha.post(`/api/v1/weddings/${weddingId}/confirm`).expect(409); // proposal not accepted, deposit not verified
+    const prop = d(await agents.neha.post('/api/v1/proposals').send({ weddingId, title: `${RUN} final proposal`, packageName: 'Full-Service', amount: 13500000 }).expect(201));
+    await agents.neha.post(`/api/v1/proposals/${prop.id}/send`).send({}).expect(201);
+    await agents.neha.post(`/api/v1/proposals/${prop.id}/respond`).send({ status: 'ACCEPTED' }).expect(201);
+    await prisma.clientPayment.updateMany({ where: { weddingId, milestone: { type: 'BOOKING' } }, data: { verifiedAt: new Date() } }); // finance verification (WP3 owns the endpoint)
+    const r = await agents.neha.post(`/api/v1/weddings/${weddingId}/confirm`).expect(201);
+    expect(d(r).confirmed).toBe(true);
+    expect(d(r).tasks.created).toBeGreaterThan(25);
+    expect(d(r).wedding.bookingStatus).toBe('CONFIRMED');
+    // event managers / operations only see assigned weddings: hand them their tasks (assignment is task ownership)
+    await agents.neha.post(`/api/v1/weddings/${weddingId}/assign`).send({ userId: (await prisma.user.findUniqueOrThrow({ where: { email: 'priya@royalknot.local' } })).id }).expect(201);
+    await agents.neha.post(`/api/v1/weddings/${weddingId}/assign`).send({ userId: (await prisma.user.findUniqueOrThrow({ where: { email: 'vikram@royalknot.local' } })).id }).expect(201);
   });
   it('is idempotent: the same key returns the original payment, nothing is double-booked', async () => {
     const again = await agents.meera.post('/api/v1/payments').send({ weddingId, milestone: 'BOOKING', amount: bookingExpected, method: 'BANK_TRANSFER', idempotencyKey: key('booking') }).expect(201);
@@ -288,10 +315,10 @@ describe('5. staged client payments & automatic planning', () => {
   it('blocks completing a task whose dependency is unfinished, allows it after', async () => {
     const tasks = d(await agents.neha.get(`/api/v1/weddings/${weddingId}/tasks?pageSize=200`));
     const dependent = tasks.find((t: any) => t.templateKey === 'venue-book');
-    await agents.neha.patch(`/api/v1/tasks/${dependent.id}`).send({ status: 'COMPLETED' }).expect(409);
+    await agents.neha.patch(`/api/v1/tasks/${dependent.id}`).send({ status: 'DONE' }).expect(409);
     const dep = tasks.find((t: any) => t.templateKey === 'venue-shortlist');
-    await agents.neha.patch(`/api/v1/tasks/${dep.id}`).send({ status: 'COMPLETED', evidenceNote: 'Site visit report filed' }).expect(200);
-    const done = d(await agents.neha.patch(`/api/v1/tasks/${dependent.id}`).send({ status: 'COMPLETED' }).expect(200));
+    await agents.neha.patch(`/api/v1/tasks/${dep.id}`).send({ status: 'DONE', evidenceNote: 'Site visit report filed' }).expect(200);
+    const done = d(await agents.neha.patch(`/api/v1/tasks/${dependent.id}`).send({ status: 'DONE' }).expect(200));
     expect(done.completedAt).toBeTruthy();
   });
   it('two concurrent payments cannot over-collect the advance milestone', async () => {
@@ -362,12 +389,15 @@ describe('6. event command centre (persist → broadcast)', () => {
     const r = d(await agents.priya.post(`/api/v1/weddings/${weddingId}/incidents`).send({ title: 'DJ arrives late', description: 'DJ is 30 min behind', severity: 'HIGH' }).expect(201));
     incidentId = r.id;
     expect((await evt).payload.title).toBe('DJ arrives late');
+    await agents.priya.patch(`/api/v1/incidents/${incidentId}`).send({ status: 'RESOLVED', resolution: 'x' }).expect(409); // REPORTED -> RESOLVED skips the chain
+    const priyaId = (await prisma.user.findUniqueOrThrow({ where: { email: 'priya@royalknot.local' } })).id;
+    for (const body of [{ status: 'TRIAGED' }, { status: 'ASSIGNED', assignedToId: priyaId }, { status: 'IN_PROGRESS' }]) await agents.priya.patch(`/api/v1/incidents/${incidentId}`).send(body).expect(200);
     await agents.priya.patch(`/api/v1/incidents/${incidentId}`).send({ status: 'RESOLVED' }).expect(400);
     const upd = next('incident.updated');
     await agents.priya.patch(`/api/v1/incidents/${incidentId}`).send({ status: 'RESOLVED', resolution: 'Band covered the gap' }).expect(200);
     expect((await upd).payload.status).toBe('RESOLVED');
     const hist = d(await agents.priya.get(`/api/v1/incidents/${incidentId}/history`));
-    expect(hist.map((h: any) => h.action)).toEqual(['create', 'update']);
+    expect(hist.map((h: any) => h.action)).toEqual(['create', 'update', 'update', 'update', 'update']);
   });
   it('reconnect: a new socket can re-join and re-sync state from REST', async () => {
     const s2 = io(`${url}/live`, { extraHeaders: { cookie: cookies.vikram }, transports: ['websocket'], reconnection: false });
@@ -438,8 +468,10 @@ describe('8. financial reconciliation & vendor settlement', () => {
   it('rejects a vendor advance larger than the contract; accepts a valid one idempotently', async () => {
     await agents.meera.post(`/api/v1/weddings/${weddingId}/vendor-payments`).send({ weddingVendorId: cateringWvId, kind: 'ADVANCE', amount: 99999999, method: 'BANK_TRANSFER', idempotencyKey: key('vadv-big') }).expect(422);
     const body = { weddingVendorId: cateringWvId, kind: 'ADVANCE', amount: 300000, method: 'BANK_TRANSFER', reference: 'ADV-1', idempotencyKey: key('vadv') };
-    const a = await agents.meera.post(`/api/v1/weddings/${weddingId}/vendor-payments`).send(body).expect(201);
-    const b = await agents.meera.post(`/api/v1/weddings/${weddingId}/vendor-payments`).send(body).expect(201);
+    // above the Finance approval limit the direct route is Founder-only (Finance raises POST /vendor-payments for a Founder-approved request)
+    await agents.meera.post(`/api/v1/weddings/${weddingId}/vendor-payments`).send(body).expect(403);
+    const a = await agents.founder.post(`/api/v1/weddings/${weddingId}/vendor-payments`).send(body).expect(201);
+    const b = await agents.founder.post(`/api/v1/weddings/${weddingId}/vendor-payments`).send(body).expect(201);
     expect(d(a).duplicate).toBe(false); expect(d(b).duplicate).toBe(true);
     expect(await prisma.vendorPayment.count({ where: { weddingVendorId: cateringWvId } })).toBe(1);
   });
@@ -452,13 +484,14 @@ describe('8. financial reconciliation & vendor settlement', () => {
   });
   it('settles exactly once: repeats and parallel attempts cannot pay the vendor twice', async () => {
     const body = (k: string) => ({ weddingVendorId: cateringWvId, method: 'BANK_TRANSFER', reference: 'FINAL', idempotencyKey: key(k) });
-    const rs = await Promise.all([1, 2, 3].map((i) => agents.meera.post(`/api/v1/reconciliation/${reconId}/settle`).send(body(`settle-${i}`))));
+    await agents.meera.post(`/api/v1/reconciliation/${reconId}/settle`).send(body('settle-fin')).expect(403); // 500,200 is above the Finance limit
+    const rs = await Promise.all([1, 2, 3].map((i) => agents.founder.post(`/api/v1/reconciliation/${reconId}/settle`).send(body(`settle-${i}`))));
     expect(rs.filter((r) => r.status === 201).length).toBe(1);
     const winner = rs.findIndex((r) => r.status === 201) + 1;
     expect(rs.filter((r) => r.status === 409).length).toBe(2);
     const payments = await prisma.vendorPayment.findMany({ where: { weddingVendorId: cateringWvId } });
     expect(payments.reduce((a, p) => a + Number(p.amount), 0)).toBe(800200); // advance 300,000 + final 500,200 = invoice
-    const again = await agents.meera.post(`/api/v1/reconciliation/${reconId}/settle`).send(body(`settle-${winner}`)).expect(201); // the winning key replays safely
+    const again = await agents.founder.post(`/api/v1/reconciliation/${reconId}/settle`).send(body(`settle-${winner}`)).expect(201); // the winning key replays safely
     expect(d(again).totalPaid).toBe('0');
     const v = d(await agents.meera.get(`/api/v1/weddings/${weddingId}/reconciliation`)).vendors[0];
     expect(v.status).toBe('SETTLED'); expect(v.remainingPayable).toBe('0');
@@ -604,7 +637,7 @@ describe('16. keycloak integration, system status, UPI link', () => {
   });
   it('seeded Keycloak demo users exist with their fixed ids and roles', async () => {
     const u = await prisma.user.findMany({ where: { email: { endsWith: '@royalknot.in' } }, orderBy: { id: 'asc' } });
-    expect(u.map((x) => [x.id[0], x.email.split('@')[0], x.role])).toEqual([['1', 'arjun', 'ADMIN'], ['2', 'priya', 'PLANNER'], ['3', 'kabir', 'EVENT_MANAGER'], ['4', 'meera', 'FINANCE'], ['5', 'rohan', 'OPERATIONS'], ['8', 'admin', 'SYSADMIN']]);
+    expect(u.map((x) => [x.id[0], x.email.split('@')[0], x.role])).toEqual([['1', 'arjun', 'FOUNDER'], ['2', 'priya', 'PLANNER'], ['3', 'kabir', 'EVENT_MANAGER'], ['4', 'meera', 'FINANCE'], ['5', 'rohan', 'OPERATIONS'], ['8', 'admin', 'SYSADMIN']]);
   });
   it('builds a UPI deep link for an unpaid milestone, restricted to finance-read roles', async () => {
     const list = d(await agents.meera.get('/api/v1/payments/milestones?pageSize=100'));

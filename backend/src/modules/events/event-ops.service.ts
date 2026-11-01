@@ -1,5 +1,7 @@
+import { ScopeService } from '../../common/scope.service';
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, UserStatus } from '@prisma/client';
+import { confirmedWeddingWhere } from '../../common/booking';
 import { AuthUser } from '../../common/decorators';
 import { orderBy, Paginated, skipTake } from '../../common/pagination';
 import { PrismaService } from '../../database/prisma.service';
@@ -35,7 +37,7 @@ export function deriveStatus(date: Date, meta: FnMeta | undefined, now = new Dat
 
 export type ArrivalBucket = 'pending' | 'arrived' | 'delayed' | 'completed';
 export function arrivalBucket(a: { status: string } | null | undefined): ArrivalBucket {
-  if (!a || a.status === 'NOT_ARRIVED') return 'pending';
+  if (!a || a.status === 'EXPECTED' || a.status === 'ON_THE_WAY') return 'pending';
   if (a.status === 'ARRIVED') return 'arrived';
   if (a.status === 'DELAYED') return 'delayed';
   return 'completed';
@@ -43,7 +45,7 @@ export function arrivalBucket(a: { status: string } | null | undefined): Arrival
 
 @Injectable()
 export class EventOpsService {
-  constructor(private prisma: PrismaService, private audit: AuditService, private rt: RealtimeService, private notif: NotificationsService) {}
+  constructor(private prisma: PrismaService, private audit: AuditService, private rt: RealtimeService, private notif: NotificationsService, private scope: ScopeService) {}
 
   // ---------------------------------------------------------------- functions
   private async metaFor(ids: string[]): Promise<Map<string, FnMeta>> {
@@ -73,8 +75,10 @@ export class EventOpsService {
     });
   }
 
-  async functions(q: FunctionQuery) {
+  async functions(q: FunctionQuery, user?: AuthUser) {
+    if (user && q.weddingId) await this.scope.assertWeddingAccess(user, q.weddingId);
     const where: Prisma.WeddingEventWhereInput = {
+      ...(user && this.scope.isScoped(user) ? { wedding: this.scope.weddingWhere(user) } : {}),
       ...(q.weddingId ? { weddingId: q.weddingId } : {}), ...(q.from || q.to ? { date: { ...(q.from ? { gte: new Date(q.from) } : {}), ...(q.to ? { lte: new Date(q.to) } : {}) } } : {}),
       ...(q.search ? { OR: [{ name: { contains: q.search, mode: 'insensitive' } }, { venue: { contains: q.search, mode: 'insensitive' } }, { wedding: { name: { contains: q.search, mode: 'insensitive' } } }] } : {}),
     };
@@ -83,9 +87,10 @@ export class EventOpsService {
     return q.status ? rows.filter((r) => r.status === q.status) : rows;
   }
 
-  async functionById(id: string) {
+  async functionById(id: string, user?: AuthUser) {
     const e = await this.prisma.weddingEvent.findUnique({ where: { id }, include: { wedding: { select: { id: true, name: true, venue: true, location: true } } } });
     if (!e) throw new NotFoundException('Function not found');
+    if (user) await this.scope.assertWeddingAccess(user, e.weddingId); // IDOR
     const [row] = await this.shape([e]);
     const timeline = await this.prisma.timelineItem.findMany({ where: { eventId: id }, orderBy: { scheduledAt: 'asc' } });
     return { ...row, timelineItems: timeline };
@@ -105,6 +110,7 @@ export class EventOpsService {
   async createFunction(dto: CreateFunctionDto, actor: AuthUser) {
     const w = await this.prisma.wedding.findUnique({ where: { id: dto.weddingId } });
     if (!w) throw new NotFoundException('Wedding not found');
+    await this.scope.assertWeddingAccess(actor, dto.weddingId);
     if (dto.endAt && new Date(dto.endAt) <= new Date(dto.date)) throw new BadRequestException('End time must be after the start time');
     await this.assertVendors(dto.weddingId, dto.vendorIds);
     const e = await this.prisma.weddingEvent.create({ data: { weddingId: dto.weddingId, kind: dto.kind, name: dto.name?.trim() || NAMES[dto.kind], date: new Date(dto.date), venue: dto.venue ?? w.venue, expectedGuests: dto.expectedGuests ?? w.expectedGuests } });
@@ -117,6 +123,7 @@ export class EventOpsService {
   async updateFunction(id: string, dto: UpdateFunctionDto, actor: AuthUser) {
     const prev = await this.prisma.weddingEvent.findUnique({ where: { id } });
     if (!prev) throw new NotFoundException('Function not found');
+    await this.scope.assertWeddingAccess(actor, prev.weddingId);
     const start = dto.date ? new Date(dto.date) : prev.date;
     if (dto.endAt && new Date(dto.endAt) <= start) throw new BadRequestException('End time must be after the start time');
     await this.assertVendors(prev.weddingId, dto.vendorIds);
@@ -129,6 +136,9 @@ export class EventOpsService {
   }
 
   async deleteFunction(id: string, actor: AuthUser) {
+    const cur = await this.prisma.weddingEvent.findUnique({ where: { id }, select: { weddingId: true } });
+    if (!cur) throw new NotFoundException('Function not found');
+    await this.scope.assertWeddingAccess(actor, cur.weddingId);
     const e = await this.prisma.weddingEvent.delete({ where: { id } }).catch(() => { throw new NotFoundException('Function not found'); });
     await this.prisma.systemSetting.deleteMany({ where: { key: fnKey(id) } });
     await this.audit.log({ actorId: actor.id, weddingId: e.weddingId, entity: 'WeddingEvent', entityId: id, action: 'delete', message: `Removed function "${e.name}"` });
@@ -137,23 +147,24 @@ export class EventOpsService {
   }
 
   // ---------------------------------------------------------------- today
-  private activeWeddings(start: Date, end: Date, weddingId?: string) {
+  /** Event-day operations cover confirmed bookings only (drafts are not bookings) and, for staff, only assigned weddings. */
+  private activeWeddings(start: Date, end: Date, weddingId?: string, user?: AuthUser) {
     return this.prisma.wedding.findMany({
-      where: { ...(weddingId ? { id: weddingId } : {}), status: { not: 'CANCELLED' }, OR: [{ startDate: { lt: end }, endDate: { gte: start } }, { events: { some: { date: { gte: start, lt: end } } } }] },
+      where: { ...(user ? { AND: [this.scope.weddingWhere(user)] } : {}), ...confirmedWeddingWhere(), ...(weddingId ? { id: weddingId } : {}), status: { not: 'CANCELLED' }, OR: [{ startDate: { lt: end }, endDate: { gte: start } }, { events: { some: { date: { gte: start, lt: end } } } }] },
       select: { id: true, name: true, venue: true, location: true, status: true, startDate: true, endDate: true, expectedGuests: true, actualGuests: true }, orderBy: { startDate: 'asc' },
     });
   }
 
   async today(q: DayQuery, user: AuthUser) {
     const { start, end, date } = dayRange(q);
-    const weddings = await this.activeWeddings(start, end);
+    const weddings = await this.activeWeddings(start, end, undefined, user);
     const ids = weddings.map((w) => w.id);
     const [events, timeline, arrivals, incidents, tasks, checkedIn] = await Promise.all([
       this.prisma.weddingEvent.findMany({ where: { weddingId: { in: ids }, date: { gte: start, lt: end } }, orderBy: { date: 'asc' }, include: { wedding: { select: { id: true, name: true, venue: true, location: true } } } }),
       this.prisma.timelineItem.findMany({ where: { weddingId: { in: ids }, scheduledAt: { gte: start, lt: end } }, orderBy: { scheduledAt: 'asc' }, include: { wedding: { select: { id: true, name: true } } } }),
       this.arrivalRows(ids, start, end),
-      this.prisma.incident.findMany({ where: { weddingId: { in: ids }, status: { not: 'RESOLVED' } }, orderBy: [{ severity: 'desc' }, { createdAt: 'desc' }], take: 20, include: { assignedTo: { select: { id: true, name: true } }, wedding: { select: { id: true, name: true } } } }),
-      this.prisma.weddingTask.findMany({ where: { ownerId: user.id, status: { not: 'COMPLETED' }, dueDate: { lt: end } }, orderBy: { dueDate: 'asc' }, take: 15, select: { id: true, name: true, dueDate: true, priority: true, status: true, wedding: { select: { id: true, name: true } } } }),
+      this.prisma.incident.findMany({ where: { weddingId: { in: ids }, status: { notIn: ['RESOLVED', 'CLOSED'] } }, orderBy: [{ severity: 'desc' }, { createdAt: 'desc' }], take: 20, include: { assignedTo: { select: { id: true, name: true } }, wedding: { select: { id: true, name: true } } } }),
+      this.prisma.weddingTask.findMany({ where: { ownerId: user.id, status: { not: 'DONE' }, dueDate: { lt: end } }, orderBy: { dueDate: 'asc' }, take: 15, select: { id: true, name: true, dueDate: true, priority: true, status: true, wedding: { select: { id: true, name: true } } } }),
       this.prisma.guest.aggregate({ where: { weddingId: { in: ids } }, _sum: { checkedInCount: true } }),
     ]);
     const functions = await this.shape(events);
@@ -169,7 +180,7 @@ export class EventOpsService {
     const now = Date.now();
     return rows
       // a tracked arrival on another day belongs to that day
-      .filter((r) => !r.arrival || (r.arrival.expectedAt >= start && r.arrival.expectedAt < end) || r.arrival.status !== 'NOT_ARRIVED')
+      .filter((r) => !r.arrival || (r.arrival.expectedAt >= start && r.arrival.expectedAt < end) || r.arrival.status !== 'EXPECTED')
       .map((r) => {
         const bucket = arrivalBucket(r.arrival);
         const overdueMinutes = r.arrival && bucket === 'pending' && r.arrival.expectedAt.getTime() < now ? Math.round((now - r.arrival.expectedAt.getTime()) / 60000) : 0;
@@ -182,9 +193,10 @@ export class EventOpsService {
     return c;
   }
 
-  async arrivals(q: ArrivalQuery) {
+  async arrivals(q: ArrivalQuery, user?: AuthUser) {
     const { start, end, date } = dayRange(q);
-    const weddings = await this.activeWeddings(start, end, q.weddingId);
+    if (user && q.weddingId) await this.scope.assertWeddingAccess(user, q.weddingId);
+    const weddings = await this.activeWeddings(start, end, q.weddingId, user);
     const rows = await this.arrivalRows(weddings.map((w) => w.id), start, end);
     return { date, weddings: weddings.map((w) => ({ id: w.id, name: w.name })), counts: this.checkinCounts(rows), rows };
   }
@@ -192,6 +204,7 @@ export class EventOpsService {
   async notifyVendor(weddingVendorId: string, message: string | undefined, actor: AuthUser) {
     const wv = await this.prisma.weddingVendor.findUnique({ where: { id: weddingVendorId }, include: { vendor: true, wedding: { select: { id: true, name: true } }, arrival: true } });
     if (!wv) throw new NotFoundException('Vendor assignment not found');
+    await this.scope.assertWeddingAccess(actor, wv.weddingId);
     const users = await this.prisma.user.findMany({ where: { vendorId: wv.vendorId, status: UserStatus.ACTIVE }, select: { id: true } });
     const body = message?.trim() || `Please confirm your arrival for ${wv.wedding.name}${wv.arrival ? ` (expected ${wv.arrival.expectedAt.toISOString()})` : ''}.`;
     const notified = users.length ? await this.notif.notify({ type: 'vendor.reminder', title: 'Arrival reminder', body, link: '/vendor-portal/check-in', userIds: users.map((u) => u.id) }) : 0;
@@ -201,7 +214,9 @@ export class EventOpsService {
 
   // ---------------------------------------------------------------- incidents
   async incidents(q: IncidentQuery, user: AuthUser) {
+    if (q.weddingId) await this.scope.assertWeddingAccess(user, q.weddingId);
     const where: Prisma.IncidentWhereInput = {
+      ...(this.scope.isScoped(user) ? { wedding: this.scope.weddingWhere(user) } : {}),
       ...(q.status ? { status: q.status } : {}), ...(q.severity ? { severity: q.severity } : {}), ...(q.weddingId ? { weddingId: q.weddingId } : {}),
       ...(q.mine ? { assignedToId: user.id } : q.assignedToId ? { assignedToId: q.assignedToId } : {}),
       ...(q.search ? { OR: [{ title: { contains: q.search, mode: 'insensitive' } }, { description: { contains: q.search, mode: 'insensitive' } }, { wedding: { name: { contains: q.search, mode: 'insensitive' } } }] } : {}),
@@ -212,20 +227,23 @@ export class EventOpsService {
     ]);
     return new Paginated(items, { page: q.page, pageSize: q.pageSize, total });
   }
-  async incidentStats(weddingId?: string) {
-    const g = await this.prisma.incident.groupBy({ by: ['status'], where: weddingId ? { weddingId } : {}, _count: true });
-    const critical = await this.prisma.incident.count({ where: { ...(weddingId ? { weddingId } : {}), status: { not: 'RESOLVED' }, severity: { in: ['HIGH', 'CRITICAL'] } } });
+  async incidentStats(weddingId?: string, user?: AuthUser) {
+    if (user && weddingId) await this.scope.assertWeddingAccess(user, weddingId);
+    const scoped: Prisma.IncidentWhereInput = user && this.scope.isScoped(user) ? { wedding: this.scope.weddingWhere(user) } : {};
+    const g = await this.prisma.incident.groupBy({ by: ['status'], where: { ...scoped, ...(weddingId ? { weddingId } : {}) }, _count: true });
+    const critical = await this.prisma.incident.count({ where: { ...scoped, ...(weddingId ? { weddingId } : {}), status: { notIn: ['RESOLVED', 'CLOSED'] }, severity: { in: ['HIGH', 'CRITICAL'] } } });
     const n = (s: string) => g.find((x) => x.status === s)?._count ?? 0;
-    return { open: n('OPEN'), inProgress: n('IN_PROGRESS'), resolved: n('RESOLVED'), highPriorityOpen: critical, total: g.reduce((s, x) => s + x._count, 0) };
+    return { open: n('REPORTED') + n('TRIAGED') + n('ASSIGNED'), inProgress: n('IN_PROGRESS'), resolved: n('RESOLVED') + n('CLOSED'), highPriorityOpen: critical, total: g.reduce((s, x) => s + x._count, 0) };
   }
 
   // ---------------------------------------------------------------- calendar
   async calendar(q: CalendarQuery, user: AuthUser) {
     const from = new Date(q.from), to = new Date(q.to);
     if (to <= from || to.getTime() - from.getTime() > 93 * DAY) throw new BadRequestException('Range must be positive and at most 93 days');
+    if (q.weddingId) await this.scope.assertWeddingAccess(user, q.weddingId);
     const [events, tasks] = await Promise.all([
-      this.prisma.weddingEvent.findMany({ where: { date: { gte: from, lt: to }, ...(q.weddingId ? { weddingId: q.weddingId } : {}) }, orderBy: { date: 'asc' }, include: { wedding: { select: { id: true, name: true, venue: true, location: true } } } }),
-      this.prisma.weddingTask.findMany({ where: { dueDate: { gte: from, lt: to }, ...(q.weddingId ? { weddingId: q.weddingId } : {}), ...(q.mine ? { ownerId: user.id } : {}) }, orderBy: { dueDate: 'asc' }, take: 500, select: { id: true, name: true, dueDate: true, status: true, priority: true, category: true, wedding: { select: { id: true, name: true } }, owner: { select: { id: true, name: true } } } }),
+      this.prisma.weddingEvent.findMany({ where: { date: { gte: from, lt: to }, ...(this.scope.isScoped(user) ? { wedding: this.scope.weddingWhere(user) } : {}), ...(q.weddingId ? { weddingId: q.weddingId } : {}) }, orderBy: { date: 'asc' }, include: { wedding: { select: { id: true, name: true, venue: true, location: true } } } }),
+      this.prisma.weddingTask.findMany({ where: { dueDate: { gte: from, lt: to }, AND: [this.scope.taskWhere(user)], ...(q.weddingId ? { weddingId: q.weddingId } : {}), ...(q.mine ? { ownerId: user.id } : {}) }, orderBy: { dueDate: 'asc' }, take: 500, select: { id: true, name: true, dueDate: true, status: true, priority: true, category: true, wedding: { select: { id: true, name: true } }, owner: { select: { id: true, name: true } } } }),
     ]);
     return { from: q.from, to: q.to, functions: await this.shape(events), tasks };
   }

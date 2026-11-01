@@ -9,7 +9,7 @@ import { ApprovalsService } from './approvals.service';
 @ApiTags('approvals') @ApiCookieAuth() @Controller('approvals') @Roles(Role.PLANNER, Role.FINANCE)
 export class ApprovalsController {
   constructor(private svc: ApprovalsService) {}
-  @Get() list(@Query() q: ApprovalQuery) { return this.svc.list(q); }
+  @Get() list(@Query() q: ApprovalQuery, @CurrentUser() u: AuthUser) { return this.svc.list(q, u); }
   @Get('counts') counts() { return this.svc.counts(); }
   @Get(':id') get(@Param('id', ParseUUIDPipe) id: string) { return this.svc.get(id); }
   @Post() @Roles(G.APPROVAL_REQUEST) create(@Body() dto: CreateApprovalDto, @CurrentUser() u: AuthUser) { return this.svc.create(dto, u); }

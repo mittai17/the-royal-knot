@@ -40,7 +40,7 @@ export function QuotationsPanel({ weddingId, creating, onCloseCreate, onOpenCrea
             {groups.map((g) => (
               <li key={g.rfqGroup}><button className="w-full flex items-center gap-4 px-5 py-4 text-left hover:bg-surface-2/50" onClick={() => setGroup(g.rfqGroup)}>
                 <div className="flex-1 min-w-0"><p className="font-medium">{g.title}</p><p className="text-xs text-ink-soft">{humanize(g.category)} · requested {fmtDate(g.createdAt)} · {g.requests.map((q) => q.vendor.name).join(', ')}</p></div>
-                <span className="text-sm text-ink-soft tabular-nums">{g.received}/{g.invited} received</span><StatusBadge status={g.decided ? 'ACCEPTED' : g.received === g.invited ? 'RECEIVED' : 'REQUESTED'} /><ChevronRight className="h-4 w-4 text-ink-soft" />
+                <span className="text-sm text-ink-soft tabular-nums">{g.received}/{g.invited} received</span><StatusBadge status={g.decided ? 'SELECTED' : g.received === g.invited ? 'RECEIVED' : 'SENT'} /><ChevronRight className="h-4 w-4 text-ink-soft" />
               </button></li>
             ))}
           </ul></Card>

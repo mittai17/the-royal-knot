@@ -5,7 +5,7 @@ import { RoleGate } from '@/components/shared/can';
 
 export default function InvoicesPage() {
   return (
-    <RoleGate roles={['FINANCE']}>
+    <RoleGate roles={['FINANCE', 'PLANNER']}>
       <PageHeader title="Client Invoices" subtitle="Create, send and collect against client invoices. Payments post to the wedding’s milestones." />
       <InvoicesPanel />
     </RoleGate>

@@ -32,7 +32,7 @@ describe('PermissionsService', () => {
     expect(await p.can(Role.PLANNER, 'clients', 'read')).toBe(true); // write implies read
     expect(await p.can(Role.SYSADMIN, 'payments', 'write')).toBe(false);
     expect(await p.can(Role.SYSADMIN, 'weddings', 'read')).toBe(false);
-    expect(await p.can(Role.ADMIN, 'anything', 'approve')).toBe(true);
+    expect(await p.can(Role.FOUNDER, 'anything', 'approve')).toBe(true);
   });
   it('DB rows override the code matrix', async () => {
     const p = new PermissionsService(prismaWith([{ role: 'PLANNER', module: 'clients', action: 'write', allowed: false }, { role: 'PLANNER', module: 'clients', action: 'read', allowed: false }, { role: 'FINANCE', module: 'enquiries', action: 'read', allowed: true }]));
@@ -41,7 +41,15 @@ describe('PermissionsService', () => {
     expect(await p.can(Role.FINANCE, 'enquiries', 'read')).toBe(true);
     const m = await p.matrix();
     expect(m.PLANNER.clients).toEqual({ read: false, write: false, approve: false });
-    expect(m.ADMIN.clients).toEqual({ read: true, write: true, approve: true });
+    expect(m.FOUNDER.clients).toEqual({ read: true, write: true, approve: true });
+  });
+  it('FOUNDER is always allowed except modifying posted accounting', async () => {
+    const p = new PermissionsService(prismaWith([]));
+    expect(await p.can(Role.FOUNDER, 'vendor-payments', 'approve')).toBe(true);
+    expect(await p.can(Role.FOUNDER, 'ledger', 'write')).toBe(false);
+    expect((await p.matrix()).FOUNDER.ledger).toEqual({ read: true, write: false, approve: true });
+    expect(await p.can(Role.FINANCE, 'ledger', 'write')).toBe(true);
+    expect(await p.can(Role.SYSADMIN, 'vendor-payments', 'write')).toBe(false);
   });
   it('degrades to code defaults when the DB is down', async () => {
     const p = new PermissionsService({ rolePermission: { findMany: jest.fn().mockRejectedValue(new Error('down')) } } as never);

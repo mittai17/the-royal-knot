@@ -36,7 +36,7 @@ export class RolesGuard implements CanActivate {
     const roles = this.reflector.getAllAndOverride<Role[]>(ROLES_KEY, [ctx.getHandler(), ctx.getClass()]);
     const user = ctx.switchToHttp().getRequest().user;
     if (!user) return true; // public route
-    if (user.role === Role.ADMIN) return true;
+    if (user.role === Role.FOUNDER) return true;
     if (!roles || roles.length === 0) {
       // Default-deny for CLIENT / VENDOR / SYSADMIN: routes that do not name them (or opt in via @AllowExternal) stay staff-only.
       if (LOCKED_ROLES.includes(user.role) && !this.reflector.getAllAndOverride<boolean>(ALLOW_EXTERNAL, [ctx.getHandler(), ctx.getClass()])) {
@@ -59,6 +59,13 @@ export class OriginGuard implements CanActivate {
     if (!origin) return true; // non-browser clients (curl, server-to-server, tests)
     const allowed = env.frontendUrl.split(',').map((s) => s.trim());
     if (allowed.includes(origin)) return true;
+    if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) return true;
+    // When forwarded by Next.js rewrites:
+    const fwdHost = req.headers['x-forwarded-host'] as string | undefined;
+    const fwdProto = (req.headers['x-forwarded-proto'] as string | undefined) ?? 'http';
+    if (fwdHost && allowed.includes(`${fwdProto}://${fwdHost}`)) return true;
+    if (fwdHost && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(`${fwdProto}://${fwdHost}`)) return true;
+    console.error(`[OriginGuard] Rejected origin: "${origin}", fwdHost: "${fwdHost}", allowed:`, allowed);
     throw new ForbiddenException('Cross-origin request blocked');
   }
 }

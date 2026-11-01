@@ -20,7 +20,7 @@ describe('invoiceStatus', () => {
   const base = { total: 1000, amountPaid: 0, dueDate: due };
   it('keeps draft and void', () => {
     expect(invoiceStatus({ ...base, status: 'DRAFT' })).toBe('DRAFT');
-    expect(invoiceStatus({ ...base, status: 'VOID' }, new Date('2030-01-01'))).toBe('VOID');
+    expect(invoiceStatus({ ...base, status: 'CANCELLED' }, new Date('2030-01-01'))).toBe('CANCELLED');
   });
   it('sent -> partially paid -> paid', () => {
     const now = new Date('2026-11-01');

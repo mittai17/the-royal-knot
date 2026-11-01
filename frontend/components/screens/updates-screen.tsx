@@ -5,7 +5,7 @@ import { RoleGate } from '@/components/shared/can';
 import { UpdatesPanel } from '@/components/ops/updates-panel';
 import { useWedding } from '@/lib/wedding-context';
 
-export default function UpdatesPage() {
+export function UpdatesScreen() {
   const { selected } = useWedding();
   return (
     <>

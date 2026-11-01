@@ -1,5 +1,5 @@
 import { Prisma, PrismaClient } from '@prisma/client';
-import { D, sum, vendorSettlement } from './finance';
+import { D, sum, vendorPaid, vendorSettlement } from './finance';
 
 type Client = PrismaClient | Prisma.TransactionClient;
 
@@ -10,7 +10,7 @@ export async function vendorBill(db: Client, weddingVendorId: string) {
   const q = wv.quotationId ? await db.quotation.findUnique({ where: { id: wv.quotationId }, select: { grandTotal: true } }) : null;
   const calc = vendorSettlement({
     original: q?.grandTotal ?? wv.contractAmount, negotiated: wv.negotiatedAmount ?? wv.contractAmount, actualInvoice: wv.settlement?.actualInvoice ?? null,
-    approvedExtras: sum(extras.map((e) => e.amount)), paid: sum(wv.payments.map((p) => p.amount)), advance: sum(wv.payments.filter((p) => p.kind === 'ADVANCE').map((p) => p.amount)),
+    approvedExtras: sum(extras.map((e) => e.amount)), paid: vendorPaid(wv.payments), advance: vendorPaid(wv.payments.filter((p) => p.kind === 'ADVANCE')),
   });
   return { wv, ...calc };
 }

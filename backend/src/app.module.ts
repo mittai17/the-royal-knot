@@ -30,6 +30,7 @@ import { ClientsModule } from './modules/clients/clients.module';
 import { ProcurementModule } from './modules/procurement/procurement.module';
 import { InvoicesModule } from './modules/invoices/invoices.module';
 import { VendorBillsModule } from './modules/vendor-bills/vendor-bills.module';
+import { VendorPaymentsModule } from './modules/vendor-payments/vendor-payments.module';
 import { BudgetsModule } from './modules/budgets/budgets.module';
 import { AccommodationModule } from './modules/accommodation/accommodation.module';
 import { TransportModule } from './modules/transport/transport.module';
@@ -51,7 +52,7 @@ import { WebsocketModule } from './websocket/websocket.module';
     DatabaseModule, AuditModule, WebsocketModule, NotificationsModule, DocumentsModule, ReconciliationModule,
     AuthModule, UsersModule, EnquiriesModule, WeddingsModule, AgreementsModule, VendorsModule, QuotationsModule, TasksModule, EventsModule, GuestsModule, PaymentsModule, ExpensesModule, AnalyticsModule, JobsModule,
     // WedFlow modules (scaffolds; see docs/ROUTES.md)
-    ScopeModule, ApprovalsModule, ClientsModule, ProcurementModule, InvoicesModule, VendorBillsModule, BudgetsModule, AccommodationModule, TransportModule, MessagingModule, AnnouncementsModule, FeedbackModule, MediaModule, ChecklistsModule, ProposalsModule, AdminModule, PortalClientModule, PortalVendorModule,
+    ScopeModule, ApprovalsModule, ClientsModule, ProcurementModule, InvoicesModule, VendorBillsModule, VendorPaymentsModule, BudgetsModule, AccommodationModule, TransportModule, MessagingModule, AnnouncementsModule, FeedbackModule, MediaModule, ChecklistsModule, ProposalsModule, AdminModule, PortalClientModule, PortalVendorModule,
   ],
   controllers: [HealthController, SystemController],
   providers: [

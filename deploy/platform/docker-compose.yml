@@ -77,7 +77,7 @@ configs:
         "loginWithEmailAllowed": true,
         "sslRequired": "none",
         "roles": { "realm": [
-          { "name": "founder_admin", "description": "Founder / Administrator (app role ADMIN)" },
+          { "name": "founder_admin", "description": "Founder / Director (app role FOUNDER)" },
           { "name": "wedding_planner", "description": "Wedding Planner (app role PLANNER)" },
           { "name": "event_manager", "description": "Event Manager (app role EVENT_MANAGER)" },
           { "name": "finance_manager", "description": "Finance Manager (app role FINANCE)" },

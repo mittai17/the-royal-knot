@@ -87,7 +87,7 @@ function DetailDrawer({ id, onClose, onChanged }: { id: string | null; onClose: 
                     <BusyButton className="btn-danger" busy={busy === 'reject'} onClick={() => act('reject')}><XCircle className="h-4 w-4" />Reject</BusyButton>
                   </Can>
                 </div>
-                {user?.role !== 'ADMIN' && <p className="text-xs text-ink-soft">Only the Founder can approve or reject. You can add review comments.</p>}
+                {user?.role !== 'FOUNDER' && <p className="text-xs text-ink-soft">Only the Founder can approve or reject. You can add review comments.</p>}
               </div>
             </Can>
           )}

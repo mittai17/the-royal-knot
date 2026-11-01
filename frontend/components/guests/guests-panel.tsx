@@ -71,7 +71,7 @@ function ImportModal({ weddingId, open, onClose, onSaved }: { weddingId: string;
   );
 }
 
-interface Stats { weddingExpected: number; invitedHeadcount: number; guests: number; confirmed: number; declined: number; maybe: number; pending: number; checkedIn: number; actualRecorded: number | null; accommodationNeeded: number; groups: { group: string; count: number }[] }
+interface Stats { weddingExpected: number; invitedHeadcount: number; guests: number; confirmed: number; declined: number; pending: number; checkedIn: number; actualRecorded: number | null; accommodationNeeded: number; groups: { group: string; count: number }[] }
 
 export function GuestsPanel({ weddingId }: { weddingId: string; expected?: number }) {
   const [rsvp, setRsvp] = useState('');
@@ -105,7 +105,7 @@ export function GuestsPanel({ weddingId }: { weddingId: string; expected?: numbe
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
         <StatCard label="Expected" value={st?.weddingExpected ?? '—'} hint="contract headcount" />
         <StatCard label="Invited (heads)" value={st?.invitedHeadcount ?? '—'} hint={`${st?.guests ?? 0} invitations`} />
-        <StatCard label="Confirmed" value={st?.confirmed ?? '—'} hint={`${st?.declined ?? 0} declined · ${(st?.pending ?? 0) + (st?.maybe ?? 0)} pending`} />
+        <StatCard label="Confirmed" value={st?.confirmed ?? '—'} hint={`${st?.declined ?? 0} declined · ${(st?.pending ?? 0)} pending`} />
         <StatCard label="Actual attendance" value={st?.actualRecorded ?? st?.checkedIn ?? '—'} hint={`${st?.checkedIn ?? 0} checked in`} />
         <StatCard label="Check-in progress" value={`${st && st.confirmed ? Math.round((st.checkedIn / st.confirmed) * 100) : 0}%`} hint="of confirmed" />
       </div>

@@ -9,7 +9,7 @@ keep the EXISTING UI look and feel (layout, components, colours in `frontend/`),
 ## Roles (8)
 | # | Role | Existing enum | Notes |
 |---|------|---------------|-------|
-| 1 | Founder / Director | ADMIN | oversight, approvals, profitability |
+| 1 | Founder / Director | FOUNDER | oversight, approvals, profitability |
 | 2 | Wedding Planner | PLANNER | clients, proposals, planning |
 | 3 | Finance Manager | FINANCE | invoices, bills, reconciliation, budgets |
 | 4 | Event Coordinator | EVENT_MANAGER | live ops, run sheet, check-in, incidents |

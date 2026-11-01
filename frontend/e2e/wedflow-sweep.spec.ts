@@ -11,8 +11,9 @@ import type { Role } from '../types';
  * Screenshots: SHOT_DIR (default /tmp/wedflow-shots) gets one desktop + one mobile shot of each role's first page and every route when SWEEP_SHOTS=all.
  */
 const PASSWORD = process.env.E2E_PASSWORD ?? 'RoyalKnot@2026';
+const BASE_URL = process.env.E2E_BASE_URL ?? 'http://localhost:3200';
 export const ROLES: { role: Role; email: string }[] = [
-  { role: 'ADMIN', email: 'arjun@royalknot.in' },
+  { role: 'FOUNDER', email: 'arjun@royalknot.in' },
   { role: 'PLANNER', email: 'priya@royalknot.in' },
   { role: 'EVENT_MANAGER', email: 'kabir@royalknot.in' },
   { role: 'FINANCE', email: 'meera@royalknot.in' },
@@ -26,7 +27,7 @@ const DESKTOP = { width: 1440, height: 900 };
 const MOBILE = { width: 390, height: 844 };
 
 export async function loginContext(browser: Browser, email: string): Promise<BrowserContext> {
-  const ctx = await browser.newContext({ viewport: DESKTOP });
+  const ctx = await browser.newContext({ viewport: DESKTOP, baseURL: BASE_URL });
   const res = await ctx.request.post('/api/v1/auth/login', { data: { email, password: PASSWORD } });
   if (!res.ok()) throw new Error(`login ${email} -> ${res.status()}`);
   return ctx;
@@ -122,7 +123,7 @@ for (const { role, email } of ROLES) {
       expect(issues.slice(start), issues.slice(start).join('\n')).toEqual([]);
     });
 
-    if (role === 'ADMIN' || role === 'PLANNER' || role === 'FINANCE') {
+    if (role === 'FOUNDER' || role === 'PLANNER' || role === 'FINANCE') {
       test('client detail page (clicked through)', async () => {
         const start = issues.length;
         await page.setViewportSize(DESKTOP); ctl.where = '/clients';
@@ -137,7 +138,7 @@ for (const { role, email } of ROLES) {
         expect(issues.slice(start), issues.slice(start).join('\n')).toEqual([]);
       });
     }
-    if (role === 'ADMIN' || role === 'PLANNER') {
+    if (role === 'FOUNDER' || role === 'PLANNER') {
       test('wedding detail tabs', async () => {
         const start = issues.length;
         ctl.where = '/weddings'; await page.goto('/weddings'); await settle(page);
@@ -169,7 +170,7 @@ for (const { role, email } of ROLES) {
       const probes = role === 'CLIENT' ? ['/dashboard', '/weddings', '/payments', '/vendor-portal/dashboard', '/admin/dashboard', '/team']
         : role === 'VENDOR' ? ['/dashboard', '/weddings', '/payments', '/client-portal/dashboard', '/admin/dashboard', '/invoices']
         : role === 'SYSADMIN' ? ['/dashboard', '/weddings', '/payments', '/client-portal/dashboard', '/vendor-portal/dashboard', '/invoices']
-        : role === 'ADMIN' ? ['/client-portal/dashboard', '/vendor-portal/dashboard']
+        : role === 'FOUNDER' ? ['/client-portal/dashboard', '/vendor-portal/dashboard']
         : ['/client-portal/dashboard', '/vendor-portal/dashboard', '/admin/dashboard', '/admin/users'];
       for (const p of probes) {
         await page.goto(p);

@@ -7,10 +7,11 @@ import { test, expect, type Browser, type BrowserContext, type Page } from '@pla
  */
 test.describe.configure({ mode: 'serial' });
 const PASSWORD = process.env.E2E_PASSWORD ?? 'RoyalKnot@2026';
+const BASE_URL = process.env.E2E_BASE_URL ?? 'http://localhost:3200';
 const RUN = Date.now().toString(36);
 
 async function as(browser: Browser, email: string): Promise<{ ctx: BrowserContext; page: Page; errors: string[] }> {
-  const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, baseURL: BASE_URL });
   const res = await ctx.request.post('/api/v1/auth/login', { data: { email, password: PASSWORD } });
   expect(res.ok(), `login ${email}`).toBeTruthy();
   const page = await ctx.newPage();
@@ -27,13 +28,21 @@ test('client: dashboard -> payments -> chat message', async ({ browser }) => {
   await expect(page.getByText('Days to go').first()).toBeVisible();
   await expect(page.getByText('Wedding progress')).toBeVisible();
 
-  await page.getByRole('link', { name: 'Payments & Invoices' }).first().click();
+  const payLink = page.getByRole('link', { name: 'Payments & Invoices' }).first();
+  if (!(await payLink.isVisible())) {
+    await page.getByRole('button', { name: 'Money & Documents' }).click();
+  }
+  await payLink.click();
   await expect(page).toHaveURL(/\/client-portal\/payments$/);
   await expect(page.getByRole('heading', { name: 'Payments & Invoices', level: 1 })).toBeVisible();
   await expect(page.locator('table').first()).toBeVisible();
   await expect(page.getByText(/₹[\d,]+/).first()).toBeVisible();
 
-  await page.getByRole('link', { name: 'Chat & Support' }).first().click();
+  const chatLink = page.getByRole('link', { name: 'Chat & Support' }).first();
+  if (!(await chatLink.isVisible())) {
+    await page.getByRole('button', { name: 'Communication' }).click();
+  }
+  await chatLink.click();
   await expect(page).toHaveURL(/\/client-portal\/chat$/);
   const msg = `E2E hello from the couple ${RUN}`;
   await page.getByLabel('Message').fill(msg);

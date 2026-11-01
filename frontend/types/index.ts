@@ -1,4 +1,4 @@
-export type Role = 'ADMIN' | 'PLANNER' | 'EVENT_MANAGER' | 'FINANCE' | 'OPERATIONS' | 'CLIENT' | 'VENDOR' | 'SYSADMIN';
+export type Role = 'FOUNDER' | 'PLANNER' | 'EVENT_MANAGER' | 'FINANCE' | 'OPERATIONS' | 'CLIENT' | 'VENDOR' | 'SYSADMIN';
 
 /** Prisma Decimal fields serialise as strings; always pass through toNum()/inr(). */
 export type Money = string | number;
@@ -19,6 +19,8 @@ export interface Wedding {
   id: string; name: string; couple?: Couple; location: string; venue?: string | null; startDate: string; endDate: string; eventDays: number;
   expectedGuests: number; actualGuests?: number | null; packageType: string; budget: Money; contractValue: Money; planner?: UserRef | null;
   plannerId?: string | null; status: string; theme?: string | null; progress?: number; events?: WeddingEvent[];
+  /** Separated lifecycle fields (master spec): status above is the legacy combined value. */
+  bookingStatus?: string; executionStage?: string; financialStatus?: string; story?: string | null; isDemo?: boolean;
 }
 
 export interface Vendor {

@@ -4,10 +4,11 @@ import { AuthUser } from '../../common/decorators';
 import { ScopeService } from '../../common/scope.service';
 import { PrismaService } from '../../database/prisma.service';
 import { RealtimeService } from '../../websocket/realtime.service';
+import { assertTransition, ROOM_ALLOCATION_TRANSITIONS } from '../../common/state-machines';
 import { AuditService } from '../audit/audit.service';
 import { AccommodationStatsQuery, AllocateDto, AllocationQuery, BulkRoomsDto, CreateHotelDto, CreateRoomDto, RoomQuery, UpdateAllocationDto, UpdateHotelDto, UpdateRoomDto } from './accommodation.dto';
 
-const ACTIVE: RoomAllocationStatus[] = ['RESERVED', 'CHECKED_IN'];
+const ACTIVE: RoomAllocationStatus[] = ['CONFIRMED', 'CHECKED_IN'];
 const include = {
   room: { select: { id: true, number: true, type: true, capacity: true, hotel: { select: { id: true, name: true, city: true } } } },
   guest: { select: { id: true, name: true, groupName: true, phone: true } },
@@ -94,19 +95,22 @@ export class AccommodationService {
   }
 
   // ---------------------------------------------------------------- allocations
-  private where(q: AllocationQuery): Prisma.RoomAllocationWhereInput {
+  private where(q: AllocationQuery, user?: AuthUser): Prisma.RoomAllocationWhereInput {
     return {
+      ...(user && this.scope.isScoped(user) ? { wedding: this.scope.weddingWhere(user) } : {}),
       ...(q.weddingId ? { weddingId: q.weddingId } : {}), ...(q.status ? { status: q.status } : {}), ...(q.hotelId ? { room: { hotelId: q.hotelId } } : {}),
       ...(q.search ? { OR: [{ guest: { name: { contains: q.search, mode: 'insensitive' } } }, { guest: { groupName: { contains: q.search, mode: 'insensitive' } } }, { room: { number: { contains: q.search, mode: 'insensitive' } } }] } : {}),
     };
   }
-  allocations(q: AllocationQuery) {
-    return this.prisma.roomAllocation.findMany({ where: this.where(q), include, orderBy: [{ checkIn: 'asc' }, { createdAt: 'asc' }], take: 1000 });
+  async allocations(q: AllocationQuery, user?: AuthUser) {
+    if (user && q.weddingId) await this.scope.assertWeddingAccess(user, q.weddingId);
+    return this.prisma.roomAllocation.findMany({ where: this.where(q, user), include, orderBy: [{ checkIn: 'asc' }, { createdAt: 'asc' }], take: 1000 });
   }
 
-  async unallocatedGuests(weddingId: string) {
+  async unallocatedGuests(weddingId: string, user?: AuthUser) {
+    if (user) await this.scope.assertWeddingAccess(user, weddingId);
     const [guests, allocated] = await Promise.all([
-      this.prisma.guest.findMany({ where: { weddingId, rsvp: { not: 'NO' } }, orderBy: [{ groupName: 'asc' }, { name: 'asc' }], select: { id: true, name: true, groupName: true, accommodationNeeded: true, plusOnes: true, rsvp: true } }),
+      this.prisma.guest.findMany({ where: { weddingId, rsvp: { not: 'DECLINED' } }, orderBy: [{ groupName: 'asc' }, { name: 'asc' }], select: { id: true, name: true, groupName: true, accommodationNeeded: true, plusOnes: true, rsvp: true } }),
       this.prisma.roomAllocation.findMany({ where: { weddingId, guestId: { not: null }, status: { in: ACTIVE } }, select: { guestId: true } }),
     ]);
     const done = new Set(allocated.map((a) => a.guestId));
@@ -114,6 +118,7 @@ export class AccommodationService {
   }
 
   async allocate(dto: AllocateDto, actor: AuthUser) {
+    await this.scope.assertWeddingAccess(actor, dto.weddingId);
     const checkIn = new Date(dto.checkIn), checkOut = new Date(dto.checkOut);
     if (checkOut <= checkIn) throw new BadRequestException('Check-out must be after check-in');
     const guestIds = [...new Set(dto.guestIds ?? [])];
@@ -142,13 +147,14 @@ export class AccommodationService {
     return created;
   }
 
-  private async load(id: string) {
+  private async load(id: string, actor?: AuthUser) {
     const a = await this.prisma.roomAllocation.findUnique({ where: { id }, include });
     if (!a) throw new NotFoundException('Allocation not found');
+    if (actor) await this.scope.assertWeddingAccess(actor, a.weddingId); // IDOR
     return a;
   }
   async updateAllocation(id: string, dto: UpdateAllocationDto, actor: AuthUser) {
-    const prev = await this.load(id);
+    const prev = await this.load(id, actor);
     if (prev.status === 'CHECKED_OUT' || prev.status === 'CANCELLED') throw new BadRequestException(`A ${prev.status.toLowerCase().replace('_', '-')} allocation cannot be changed`);
     const checkIn = dto.checkIn ? new Date(dto.checkIn) : (await this.prisma.roomAllocation.findUniqueOrThrow({ where: { id } })).checkIn;
     const checkOut = dto.checkOut ? new Date(dto.checkOut) : (await this.prisma.roomAllocation.findUniqueOrThrow({ where: { id } })).checkOut;
@@ -164,19 +170,20 @@ export class AccommodationService {
     return a;
   }
   private async transition(id: string, to: RoomAllocationStatus, from: RoomAllocationStatus[], actor: AuthUser, verb: string) {
-    const prev = await this.load(id);
-    if (!from.includes(prev.status)) throw new BadRequestException(`Cannot ${verb} an allocation that is ${prev.status.toLowerCase().replace('_', ' ')}`);
+    const prev = await this.load(id, actor);
+    if (!from.includes(prev.status)) throw new ConflictException(`Cannot ${verb} an allocation that is ${prev.status.toLowerCase().replace('_', ' ')}`);
+    assertTransition('Room allocation', ROOM_ALLOCATION_TRANSITIONS, prev.status, to);
     const now = new Date();
     const a = await this.prisma.roomAllocation.update({ where: { id }, data: { status: to, ...(to === 'CHECKED_IN' ? { checkedInAt: now } : {}), ...(to === 'CHECKED_OUT' ? { checkedOutAt: now } : {}) }, include });
     await this.audit.log({ actorId: actor.id, weddingId: a.weddingId, entity: 'RoomAllocation', entityId: id, action: verb.replace(' ', '_'), message: `${a.guest?.name ?? 'Block'} ${verb} room ${a.room.number} (${a.room.hotel.name})` });
     this.rt.toWedding(a.weddingId, 'accommodation.updated', { ids: [id] });
     return a;
   }
-  checkIn(id: string, actor: AuthUser) { return this.transition(id, 'CHECKED_IN', ['RESERVED'], actor, 'check in'); }
+  checkIn(id: string, actor: AuthUser) { return this.transition(id, 'CHECKED_IN', ['CONFIRMED'], actor, 'check in'); }
   checkOut(id: string, actor: AuthUser) { return this.transition(id, 'CHECKED_OUT', ['CHECKED_IN'], actor, 'check out'); }
-  cancel(id: string, actor: AuthUser) { return this.transition(id, 'CANCELLED', ['RESERVED', 'CHECKED_IN'], actor, 'cancel'); }
+  cancel(id: string, actor: AuthUser) { return this.transition(id, 'CANCELLED', ['CONFIRMED', 'CHECKED_IN'], actor, 'cancel'); }
   async remove(id: string, actor: AuthUser) {
-    const a = await this.load(id);
+    const a = await this.load(id, actor);
     if (a.status === 'CHECKED_IN') throw new BadRequestException('Check the guest out before removing the allocation');
     await this.prisma.roomAllocation.delete({ where: { id } });
     await this.audit.log({ actorId: actor.id, weddingId: a.weddingId, entity: 'RoomAllocation', entityId: id, action: 'delete', message: `Removed allocation of ${a.guest?.name ?? 'block'} from room ${a.room.number}` });
@@ -184,20 +191,21 @@ export class AccommodationService {
     return { ok: true };
   }
 
-  async stats(q: AccommodationStatsQuery) {
+  async stats(q: AccommodationStatsQuery, user?: AuthUser) {
+    if (user && q.weddingId) await this.scope.assertWeddingAccess(user, q.weddingId);
     const now = new Date();
     const roomWhere: Prisma.RoomWhereInput = { active: true, hotel: { active: true, ...(q.hotelId ? { id: q.hotelId } : {}) } };
     const [rooms, byStatus, tonight, needed, allocatedGuests] = await Promise.all([
       this.prisma.room.aggregate({ where: roomWhere, _count: true, _sum: { capacity: true } }),
       this.prisma.roomAllocation.groupBy({ by: ['status'], where: { ...(q.weddingId ? { weddingId: q.weddingId } : {}), ...(q.hotelId ? { room: { hotelId: q.hotelId } } : {}) }, _count: true }),
       this.prisma.roomAllocation.count({ where: { status: { in: ACTIVE }, checkIn: { lte: now }, checkOut: { gt: now }, room: roomWhere } }),
-      q.weddingId ? this.prisma.guest.count({ where: { weddingId: q.weddingId, accommodationNeeded: true, rsvp: { not: 'NO' } } }) : this.prisma.guest.count({ where: { accommodationNeeded: true, rsvp: { not: 'NO' } } }),
+      q.weddingId ? this.prisma.guest.count({ where: { weddingId: q.weddingId, accommodationNeeded: true, rsvp: { not: 'DECLINED' } } }) : this.prisma.guest.count({ where: { accommodationNeeded: true, rsvp: { not: 'DECLINED' } } }),
       q.weddingId ? this.prisma.roomAllocation.count({ where: { weddingId: q.weddingId, guestId: { not: null }, status: { in: ACTIVE }, guest: { accommodationNeeded: true } } }) : this.prisma.roomAllocation.count({ where: { guestId: { not: null }, status: { in: ACTIVE }, guest: { accommodationNeeded: true } } }),
     ]);
     const n = (s: string) => byStatus.find((b) => b.status === s)?._count ?? 0;
     const capacity = rooms._sum.capacity ?? 0;
     return {
-      rooms: rooms._count, capacity, reserved: n('RESERVED'), checkedIn: n('CHECKED_IN'), checkedOut: n('CHECKED_OUT'), cancelled: n('CANCELLED'),
+      rooms: rooms._count, capacity, reserved: n('CONFIRMED'), checkedIn: n('CHECKED_IN'), checkedOut: n('CHECKED_OUT'), cancelled: n('CANCELLED'),
       occupiedTonight: tonight, occupancyPct: capacity ? Math.round((Math.min(tonight, capacity) / capacity) * 100) : 0,
       guestsNeedingRooms: needed, guestsWithRooms: allocatedGuests, guestsWithoutRooms: Math.max(0, needed - allocatedGuests),
     };
@@ -211,7 +219,7 @@ export class AccommodationService {
     for (const r of rows) { const h = r.room.hotel; const e = hotels.get(h.id) ?? { ...h, rooms: 0, guests: 0 }; e.guests += r.guestId ? 1 : 0; hotels.set(h.id, e); }
     const roomSet = new Set(rows.map((r) => r.roomId));
     for (const r of rows) { const e = hotels.get(r.room.hotel.id)!; e.rooms = new Set(rows.filter((x) => x.room.hotel.id === e.id).map((x) => x.roomId)).size; }
-    const guestsNeeding = await this.prisma.guest.count({ where: { weddingId: { in: ids }, accommodationNeeded: true, rsvp: { not: 'NO' } } });
+    const guestsNeeding = await this.prisma.guest.count({ where: { weddingId: { in: ids }, accommodationNeeded: true, rsvp: { not: 'DECLINED' } } });
     return { summary: { allocations: rows.length, rooms: roomSet.size, guestsAssigned: rows.filter((r) => r.guestId).length, checkedIn: rows.filter((r) => r.status === 'CHECKED_IN').length, guestsNeedingRooms: guestsNeeding }, hotels: [...hotels.values()], allocations: rows };
   }
 }

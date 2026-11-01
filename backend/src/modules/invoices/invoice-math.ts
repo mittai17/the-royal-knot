@@ -19,7 +19,7 @@ export function computeInvoice(lines: InvoiceLineInput[], discount: Prisma.Decim
 
 /** Live status. Drafts and voids never change; everything else derives from payments and the due date (end of the due day). */
 export function invoiceStatus(i: { status: ClientInvoiceStatus; total: Prisma.Decimal.Value; amountPaid: Prisma.Decimal.Value; dueDate?: Date | null }, now = new Date()): ClientInvoiceStatus {
-  if (i.status === 'VOID' || i.status === 'DRAFT') return i.status;
+  if (i.status === 'CANCELLED' || i.status === 'DRAFT') return i.status;
   const total = D(i.total), paid = D(i.amountPaid);
   if (total.gt(0) && paid.gte(total)) return 'PAID';
   if (i.dueDate && now.getTime() > i.dueDate.getTime() + 24 * 3600 * 1000 - 1) return 'OVERDUE';

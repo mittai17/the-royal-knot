@@ -23,3 +23,10 @@ export class SettleDto {
   @IsOptional() @IsString() reference?: string;
   @IsString() @MinLength(8) @MaxLength(100) idempotencyKey: string;
 }
+
+export class VoidChargeDto { @IsString() @MinLength(3) @MaxLength(500) reason: string; }
+export class QueueQuery {
+  @IsOptional() @IsUUID() weddingId?: string;
+  @IsOptional() @IsString() type?: string;
+  @IsOptional() @IsString() severity?: string;
+}

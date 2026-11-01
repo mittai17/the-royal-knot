@@ -27,7 +27,7 @@ export class FinancialReportsController {
     if (!(REPORTS as readonly string[]).includes(report)) throw new NotFoundException(`Unknown report "${report}". Available: ${REPORTS.join(', ')}`);
     const data = await this.svc.run(report as ReportName, this.svc.parseRange(q.from, q.to));
     if (q.format !== 'csv') return data;
-    const rows = ('rows' in data ? (data as { rows: Record<string, unknown>[] }).rows : []) as Record<string, unknown>[];
+    const rows = this.svc.csvRows(data);
     return new StreamableFile(Buffer.from(toCsv(rows), 'utf8'), { type: 'text/csv; charset=utf-8', disposition: `attachment; filename="${report}-${new Date().toISOString().slice(0, 10)}.csv"` });
   }
 }

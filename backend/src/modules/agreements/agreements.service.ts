@@ -1,6 +1,9 @@
 import { BadRequestException, ConflictException, Injectable, Logger, NotFoundException, StreamableFile } from '@nestjs/common';
 import { Agreement, AgreementSignature, DocumentCategory } from '@prisma/client';
 import { AuthUser } from '../../common/decorators';
+import { ScopeService } from '../../common/scope.service';
+import { AGREEMENT_TRANSITIONS, assertTransition } from '../../common/state-machines';
+import { WeddingsService } from '../weddings/weddings.service';
 import { PdfService } from '../../common/pdf.service';
 import { dt, esc, inr, kv, page, raw } from '../../common/pdf-templates';
 import { StorageService } from '../../common/storage.service';
@@ -13,22 +16,31 @@ import { SignAgreementDto } from './agreements.dto';
 @Injectable()
 export class AgreementsService {
   private logger = new Logger('Agreements');
-  constructor(private prisma: PrismaService, private audit: AuditService, private pdf: PdfService, private docs: DocumentsService, private storage: StorageService, private notif: NotificationsService) {}
+  constructor(private prisma: PrismaService, private audit: AuditService, private pdf: PdfService, private docs: DocumentsService, private storage: StorageService, private notif: NotificationsService, private scope: ScopeService, private weddings: WeddingsService) {}
 
   templates() { return this.prisma.agreementTemplate.findMany({ orderBy: { name: 'asc' } }); }
 
-  async list(weddingId: string) {
+  async list(weddingId: string, user?: AuthUser) {
+    if (user) await this.scope.assertWeddingAccess(user, weddingId);
     return this.prisma.agreement.findMany({ where: { weddingId }, orderBy: { version: 'desc' }, include: { signatures: { select: { id: true, signerName: true, signerRole: true, signedAt: true } } } });
   }
 
-  async get(id: string) {
+  async get(id: string, user?: AuthUser) {
     const a = await this.prisma.agreement.findUnique({ where: { id }, include: { signatures: true, template: true, wedding: { include: { couple: true } } } });
     if (!a) throw new NotFoundException('Agreement not found');
+    if (user) await this.scope.assertWeddingAccess(user, a.weddingId); // IDOR: staff only reach agreements of weddings they are assigned to
     return a;
+  }
+
+  /** Expiry job hook: SENT / DRAFT agreements past `expiresAt` become EXPIRED. Idempotent and never touches SIGNED / REJECTED. */
+  async expireStale(now = new Date()) {
+    const r = await this.prisma.agreement.updateMany({ where: { status: { in: ['DRAFT', 'SENT'] }, expiresAt: { lt: now } }, data: { status: 'EXPIRED' } });
+    return { expired: r.count };
   }
 
   /** Renders the template with live wedding data. Earlier unsigned versions are voided; history is kept. */
   async generate(weddingId: string, templateId: string | undefined, actor: AuthUser) {
+    await this.scope.assertWeddingAccess(actor, weddingId);
     const w = await this.prisma.wedding.findUnique({ where: { id: weddingId }, include: { couple: true, milestones: { orderBy: { dueDate: 'asc' } } } });
     if (!w) throw new NotFoundException('Wedding not found');
     const template = templateId ? await this.prisma.agreementTemplate.findUnique({ where: { id: templateId } }) : await this.prisma.agreementTemplate.findFirst({ where: { packageType: w.packageType } });
@@ -44,10 +56,11 @@ export class AgreementsService {
     const content = template.body.replace(/\{\{(\w+)\}\}/g, (_, k) => vars[k] ?? '');
     const last = await this.prisma.agreement.findFirst({ where: { weddingId }, orderBy: { version: 'desc' } });
     const a = await this.prisma.$transaction(async (tx) => {
-      await tx.agreement.updateMany({ where: { weddingId, status: { in: ['DRAFT', 'SENT'] } }, data: { status: 'VOID' } });
+      await tx.agreement.updateMany({ where: { weddingId, status: { in: ['DRAFT', 'SENT'] } }, data: { status: 'EXPIRED' } });
       return tx.agreement.create({ data: { weddingId, templateId: template.id, version: (last?.version ?? 0) + 1, status: 'SENT', content, amount: w.contractValue, paymentTerms: terms } });
     });
     await this.audit.log({ actorId: actor.id, weddingId, entity: 'Agreement', entityId: a.id, action: 'generate', message: `Generated agreement v${a.version}` });
+    await this.weddings.refreshBookingStatus(weddingId); // DRAFT -> AGREEMENT_PENDING
     return a;
   }
 
@@ -60,18 +73,52 @@ export class AgreementsService {
   }
 
   async sign(id: string, dto: SignAgreementDto, actor: AuthUser, ip?: string) {
-    const a = await this.get(id);
-    if (a.status === 'VOID') throw new ConflictException('This agreement version was superseded');
+    const a = await this.get(id, actor);
+    if (a.expiresAt && a.expiresAt < new Date() && (a.status === 'SENT' || a.status === 'DRAFT')) {
+      await this.prisma.agreement.update({ where: { id }, data: { status: 'EXPIRED' } });
+      throw new ConflictException('This agreement has expired; ask your planner for a new version');
+    }
+    if (a.status === 'EXPIRED') throw new ConflictException('This agreement version was superseded');
+    if (a.status === 'REJECTED') throw new ConflictException('This agreement was rejected');
+    if (a.status === 'DRAFT') throw new ConflictException('This agreement has not been sent for signature yet');
+    // SENT -> SIGNED on the client's signature. A SIGNED agreement may still collect the planner's counter-signature (no state change).
+    if (a.status === 'SIGNED' && dto.signerRole === 'CLIENT') throw new ConflictException('CLIENT has already signed');
     if (a.signatures.some((s) => s.signerRole === dto.signerRole)) throw new ConflictException(`${dto.signerRole} has already signed`);
-    await this.prisma.agreementSignature.create({ data: { agreementId: id, signerName: dto.signerName, signerRole: dto.signerRole, signatureData: dto.signatureData, ip } });
-    const clientSigned = dto.signerRole === 'CLIENT' || a.signatures.some((s) => s.signerRole === 'CLIENT');
-    if (clientSigned) await this.prisma.agreement.update({ where: { id }, data: { status: 'SIGNED' } });
+    const clientSigned = dto.signerRole === 'CLIENT';
+    if (clientSigned) assertTransition('Agreement', AGREEMENT_TRANSITIONS, a.status, 'SIGNED');
+    await this.prisma.$transaction(async (tx) => {
+      await tx.agreementSignature.create({ data: { agreementId: id, signerName: dto.signerName, signerRole: dto.signerRole, signatureData: dto.signatureData, ip } });
+      if (clientSigned) {
+        const claim = await tx.agreement.updateMany({ where: { id, status: 'SENT' }, data: { status: 'SIGNED' } }); // concurrent double-sign loses here
+        if (claim.count === 0) throw new ConflictException('This agreement is no longer open for signature');
+      }
+    });
     await this.audit.log({ actorId: actor.id, weddingId: a.weddingId, entity: 'Agreement', entityId: id, action: 'sign', message: `${dto.signerName} signed agreement v${a.version} as ${dto.signerRole.toLowerCase()}` });
     if (clientSigned) {
       await this.notif.notify({ type: 'agreement.signed', title: 'Agreement signed', body: `${a.wedding.name} · v${a.version}`, link: `/weddings/${a.weddingId}`, roles: ['PLANNER', 'FINANCE'] });
       await this.storePdf(id, actor).catch((e) => this.logger.warn(`Signed PDF not stored: ${e.message}`));
+      await this.weddings.confirmIfReady(a.weddingId, actor); // PROPOSAL_PENDING / DEPOSIT_PENDING, and CONFIRMED when everything else is already in place
     }
     return this.get(id);
+  }
+
+  /** Planner or the couple declines the agreement: SENT -> REJECTED (a new version can be generated afterwards). */
+  async reject(id: string, reason: string | undefined, actor: AuthUser) {
+    const a = await this.get(id, actor);
+    assertTransition('Agreement', AGREEMENT_TRANSITIONS, a.status, 'REJECTED');
+    const claim = await this.prisma.agreement.updateMany({ where: { id, status: 'SENT' }, data: { status: 'REJECTED', rejectedAt: new Date(), rejectReason: reason } });
+    if (!claim.count) throw new ConflictException('This agreement is no longer open');
+    await this.audit.log({ actorId: actor.id, weddingId: a.weddingId, entity: 'Agreement', entityId: id, action: 'reject', message: `Agreement v${a.version} rejected${reason ? `: ${reason}` : ''}` });
+    await this.weddings.refreshBookingStatus(a.weddingId);
+    return this.get(id);
+  }
+
+  /** The couple signs their own agreement from the portal: scoped to their wedding, role forced to CLIENT. */
+  async signAsClient(u: AuthUser, id: string, dto: { signerName: string; signatureData: string }, ip?: string) {
+    const a = await this.prisma.agreement.findUnique({ where: { id }, select: { weddingId: true, status: true } });
+    if (!a || !['SENT', 'SIGNED'].includes(a.status)) throw new NotFoundException('Agreement not found');
+    await this.scope.assertWeddingAccess(u, a.weddingId);
+    return this.sign(id, { signerName: dto.signerName, signerRole: 'CLIENT', signatureData: dto.signatureData }, u, ip);
   }
 
   /** Renders the PDF with embedded signatures and stores it in MinIO as a versioned wedding document. */
@@ -84,7 +131,7 @@ export class AgreementsService {
   }
 
   async pdfStream(id: string, actor: AuthUser) {
-    const a = await this.get(id);
+    const a = await this.get(id, actor);
     const buffer = a.documentId && a.status === 'SIGNED' ? await streamToBuffer(await this.storage.get((await this.prisma.document.findUniqueOrThrow({ where: { id: a.documentId } })).objectKey)) : await this.pdf.htmlToPdf(this.html(a, a.wedding));
     return new StreamableFile(buffer, { type: 'application/pdf', disposition: `inline; filename="agreement-v${a.version}.pdf"` });
   }

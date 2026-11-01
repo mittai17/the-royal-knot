@@ -7,7 +7,7 @@ import { useApi } from '@/hooks/use-api';
 import { useWedding } from '@/lib/wedding-context';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/lib/auth';
-import { AREA_PREFIX, HOME } from '@/lib/permissions';
+import { AREA_PREFIX, HOME, SHARED_PREFIXES } from '@/lib/permissions';
 
 export function AppShell({ children }: { children: ReactNode }) {
   const [collapsed, setCollapsed] = useState(false);
@@ -19,11 +19,12 @@ export function AppShell({ children }: { children: ReactNode }) {
   const staff = !!user && !AREA_PREFIX[user.role];
   const pipe = useApi<{ stages: { stage: string; count: number }[] }>(staff ? '/enquiries/pipeline/summary' : null);
 
-  // CLIENT / VENDOR / SYSADMIN live under their own prefix (plus /settings and /notifications); everyone else may not enter those prefixes.
+  // CLIENT / VENDOR / SYSADMIN live under their own prefix (plus /notifications). They have no generic /settings: SYSADMIN uses /admin/*,
+  // CLIENT / VENDOR their portal settings. Everyone else may not enter those prefixes.
   const stray = !!user && (AREA_PREFIX[user.role]
-    ? !(path.startsWith(AREA_PREFIX[user.role]!) || path.startsWith('/settings') || path.startsWith('/notifications'))
+    ? !(path.startsWith(AREA_PREFIX[user.role]!) || (SHARED_PREFIXES[user.role] ?? []).some((p) => path.startsWith(p)))
     : path.startsWith('/client-portal') || path.startsWith('/vendor-portal') || path.startsWith('/admin'));
-  const redirecting = stray && !(user?.role === 'ADMIN' && path.startsWith('/admin'));
+  const redirecting = stray && !(user?.role === 'FOUNDER' && path.startsWith('/admin'));
   useEffect(() => { if (redirecting && user) router.replace(HOME[user.role]); }, [redirecting, user, router]);
 
   useEffect(() => { try { setCollapsed(localStorage.getItem('rk.collapsed') === '1'); } catch { /* ignore */ } }, []);
@@ -32,7 +33,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   if (loading || !user || redirecting) {
     return <div className="min-h-screen grid place-items-center text-sm text-ink-soft">Loading workspace…</div>;
   }
-  const enqTotal = pipe.data?.stages.filter((s) => s.stage !== 'CONFIRMED' && s.stage !== 'LOST').reduce((a, s) => a + s.count, 0);
+  const enqTotal = pipe.data?.stages.filter((s) => s.stage !== 'CONVERTED' && s.stage !== 'LOST').reduce((a, s) => a + s.count, 0);
 
   return (
     <div className="min-h-screen">

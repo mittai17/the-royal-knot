@@ -14,13 +14,21 @@ export class AllExceptionsFilter implements ExceptionFilter {
     let status = HttpStatus.INTERNAL_SERVER_ERROR;
     let message = 'Something went wrong';
     let details: unknown;
+    let reason: string | undefined;
 
     if (exception instanceof HttpException) {
       status = exception.getStatus();
-      const r = exception.getResponse() as string | { message?: string | string[]; details?: unknown };
+      const r = exception.getResponse() as string | { message?: string | string[]; details?: unknown; code?: string; [k: string]: unknown };
       if (typeof r === 'string') message = r;
       else if (Array.isArray(r.message)) { message = 'Validation failed'; details = r.message; }
-      else { message = r.message ?? exception.message; details = r.details; }
+      else {
+        // business-rule errors may carry a machine-readable `code` (surfaced as error.reason, e.g. AGREEMENT_NOT_SIGNED, ILLEGAL_TRANSITION,
+        // CONFIRMATION_BLOCKED) and extra context fields (blockers, from, to, allowed ...) which are surfaced as details
+        const { message: m, details: dd, code, statusCode: _s, error: _e, ...extra } = r;
+        message = (m as string | undefined) ?? exception.message;
+        reason = typeof code === 'string' ? code : undefined;
+        details = dd ?? (Object.keys(extra).length ? extra : undefined);
+      }
     } else if (exception instanceof Prisma.PrismaClientKnownRequestError) {
       if (exception.code === 'P2002') { status = 409; message = 'A record with these values already exists'; details = exception.meta?.target; }
       else if (exception.code === 'P2025') { status = 404; message = 'Record not found'; }
@@ -30,6 +38,6 @@ export class AllExceptionsFilter implements ExceptionFilter {
     } else {
       this.logger.error(`${req.method} ${req.url} ${(exception as Error)?.stack ?? exception}`);
     }
-    res.status(status).json({ error: { code: codeFor(status), message, ...(details ? { details } : {}) } });
+    res.status(status).json({ error: { code: codeFor(status), message, ...(reason ? { reason } : {}), ...(details ? { details } : {}) } });
   }
 }

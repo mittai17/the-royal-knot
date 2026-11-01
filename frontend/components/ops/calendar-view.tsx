@@ -13,7 +13,7 @@ import { Async } from './shared';
 import type { CalendarTask, EventFunction } from './types';
 
 const FN_TONE = { UPCOMING: 'info', IN_PROGRESS: 'warning', COMPLETED: 'success', CANCELLED: 'neutral' } as const;
-const TASK_TONE = (t: CalendarTask) => (t.status === 'COMPLETED' ? 'success' : new Date(t.dueDate) < new Date() ? 'danger' : 'burgundy') as CalItem['tone'];
+const TASK_TONE = (t: CalendarTask) => (t.status === 'DONE' ? 'success' : new Date(t.dueDate) < new Date() ? 'danger' : 'burgundy') as CalItem['tone'];
 
 export function CalendarView() {
   const { weddings } = useWedding();

@@ -8,9 +8,9 @@ const INTERNAL_URL = 'http://keycloak:8080';
 
 describe('mapKeycloakRoles', () => {
   it.each([
-    [['FOUNDER'], Role.ADMIN], [['WEDDING_PLANNER'], Role.PLANNER], [['EVENT_MANAGER'], Role.EVENT_MANAGER],
+    [['FOUNDER'], Role.FOUNDER], [['WEDDING_PLANNER'], Role.PLANNER], [['EVENT_MANAGER'], Role.EVENT_MANAGER],
     [['FINANCE_MANAGER'], Role.FINANCE], [['OPS_STAFF'], Role.OPERATIONS],
-    [['founder_admin'], Role.ADMIN], [['operations_staff'], Role.OPERATIONS], // legacy realm role names
+    [['founder_admin'], Role.FOUNDER], [['operations_staff'], Role.OPERATIONS], // legacy realm role names
   ])('%j -> %s', (roles, expected) => expect(mapKeycloakRoles(roles)).toBe(expected));
 
   it('ignores Keycloak built-in roles and returns null when nothing maps', () => {
@@ -20,7 +20,7 @@ describe('mapKeycloakRoles', () => {
   });
 
   it('picks the most privileged role when several are held', () => {
-    expect(mapKeycloakRoles(['OPS_STAFF', 'FINANCE_MANAGER', 'FOUNDER'])).toBe(Role.ADMIN);
+    expect(mapKeycloakRoles(['OPS_STAFF', 'FINANCE_MANAGER', 'FOUNDER'])).toBe(Role.FOUNDER);
     expect(mapKeycloakRoles(['OPS_STAFF', 'WEDDING_PLANNER'])).toBe(Role.PLANNER);
   });
 });
@@ -85,26 +85,26 @@ describe('KeycloakService (split-horizon JWT validation)', () => {
       prisma.user.findUnique.mockResolvedValue(null);
       prisma.user.create.mockImplementation(async ({ data }) => ({ ...data, status: UserStatus.ACTIVE }));
       const u = await svc.upsertFromClaims(claims);
-      expect(prisma.user.create.mock.calls[0][0].data).toMatchObject({ id: claims.sub, email: 'arjun@royalknot.in', role: Role.ADMIN, name: 'Arjun Rao' });
+      expect(prisma.user.create.mock.calls[0][0].data).toMatchObject({ id: claims.sub, email: 'arjun@royalknot.in', role: Role.FOUNDER, name: 'Arjun Rao' });
       expect(prisma.user.create.mock.calls[0][0].data.passwordHash).toMatch(/^\$argon2/);
-      expect(u.role).toBe(Role.ADMIN);
+      expect(u.role).toBe(Role.FOUNDER);
     });
     it('matches an existing user by email (keeps its id) and syncs a changed role', async () => {
       prisma.user.findUnique.mockResolvedValue({ id: '11111111-1111-1111-1111-111111111111', email: 'arjun@royalknot.in', role: Role.PLANNER, status: UserStatus.ACTIVE });
       prisma.user.update.mockImplementation(async ({ data }) => ({ id: '11111111-1111-1111-1111-111111111111', ...data }));
       const u = await svc.upsertFromClaims(claims);
       expect(prisma.user.create).not.toHaveBeenCalled();
-      expect(prisma.user.update).toHaveBeenCalledWith({ where: { id: '11111111-1111-1111-1111-111111111111' }, data: { role: Role.ADMIN } });
-      expect(u.role).toBe(Role.ADMIN);
+      expect(prisma.user.update).toHaveBeenCalledWith({ where: { id: '11111111-1111-1111-1111-111111111111' }, data: { role: Role.FOUNDER } });
+      expect(u.role).toBe(Role.FOUNDER);
     });
     it('does not write when nothing changed', async () => {
-      const row = { id: 'x', email: 'arjun@royalknot.in', role: Role.ADMIN, status: UserStatus.ACTIVE };
+      const row = { id: 'x', email: 'arjun@royalknot.in', role: Role.FOUNDER, status: UserStatus.ACTIVE };
       prisma.user.findUnique.mockResolvedValue(row);
       await expect(svc.upsertFromClaims(claims)).resolves.toBe(row);
       expect(prisma.user.update).not.toHaveBeenCalled();
     });
     it('refuses disabled accounts, missing email and unmapped roles', async () => {
-      prisma.user.findUnique.mockResolvedValue({ id: 'x', role: Role.ADMIN, status: UserStatus.DISABLED });
+      prisma.user.findUnique.mockResolvedValue({ id: 'x', role: Role.FOUNDER, status: UserStatus.DISABLED });
       await expect(svc.upsertFromClaims(claims)).rejects.toBeInstanceOf(UnauthorizedException);
       await expect(svc.upsertFromClaims({ ...claims, email: undefined })).rejects.toBeInstanceOf(ForbiddenException);
       await expect(svc.upsertFromClaims({ ...claims, realm_access: { roles: ['offline_access'] } })).rejects.toBeInstanceOf(ForbiddenException);

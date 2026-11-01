@@ -39,14 +39,17 @@ export class RemindersProcessor extends WorkerHost {
     const now = new Date();
     const day = now.toISOString().slice(0, 10);
     let n = 0;
-    const followUps = await this.prisma.enquiry.findMany({ where: { followUpAt: { lte: now }, stage: { notIn: ['CONFIRMED', 'LOST'] } }, include: { couple: true } });
+    const followUps = await this.prisma.enquiry.findMany({ where: { followUpAt: { lte: now }, stage: { notIn: ['CONVERTED', 'LOST'] } }, include: { couple: true } });
     for (const e of followUps) n += await this.notif.notify({ type: 'enquiry.followup', title: 'Follow-up due', body: `${e.couple.brideName} & ${e.couple.groomName}`, link: `/enquiries/${e.id}`, userIds: e.assignedToId ? [e.assignedToId] : [], roles: e.assignedToId ? [] : ['PLANNER'], dedupeKey: `followup:${e.id}:${e.followUpAt!.toISOString().slice(0, 10)}` });
     for (const m of await this.payments.refreshStatuses()) {
       const created = await this.notif.notify({ type: m.status === 'OVERDUE' ? 'payment.overdue' : 'payment.due', title: m.status === 'OVERDUE' ? 'Payment overdue' : 'Payment due soon', body: `${m.weddingName} · ${m.type.toLowerCase()} · ${inr(m.outstanding)} (due ${dt(m.dueDate)})`, link: `/weddings/${m.weddingId}?tab=payments`, roles: ['FINANCE', 'PLANNER'], dedupeKey: `pay:${m.id}:${m.status}` });
       n += created;
       if (created && env.smtp.host) await this.email.add('send', { to: 'finance@theroyalknot.local', subject: `Payment ${m.status.toLowerCase()}: ${m.weddingName}`, text: `${m.type} milestone of ${m.weddingName} has ${inr(m.outstanding)} outstanding (due ${dt(m.dueDate)}).` }, { attempts: 3, removeOnComplete: 50 });
     }
-    const tasks = await this.prisma.weddingTask.findMany({ where: { status: { not: 'COMPLETED' }, dueDate: { lt: now } }, include: { wedding: { select: { name: true } } }, take: 200 });
+    // Scheduled vendor payments that have come due (Finance executes them; the approver cannot).
+    const dueVp = await this.prisma.vendorPayment.findMany({ where: { status: 'SCHEDULED', scheduledFor: { lte: now } }, include: { wedding: { select: { name: true } }, weddingVendor: { select: { vendor: { select: { name: true } } } } }, take: 200 });
+    for (const p of dueVp) n += await this.notif.notify({ type: 'vendor-payment.due', title: 'Scheduled vendor payment is due', body: `${p.weddingVendor.vendor.name} · ${p.wedding.name} · ${inr(p.amount)}`, link: '/vendor-payments?tab=scheduled', roles: ['FINANCE'], dedupeKey: `vp-due:${p.id}:${p.scheduledFor!.toISOString().slice(0, 10)}` });
+    const tasks = await this.prisma.weddingTask.findMany({ where: { status: { not: 'DONE' }, dueDate: { lt: now } }, include: { wedding: { select: { name: true } } }, take: 200 });
     for (const t of tasks) n += await this.notif.notify({ type: 'task.overdue', title: 'Task overdue', body: `${t.name} · ${t.wedding.name}`, link: `/weddings/${t.weddingId}?tab=planning`, userIds: t.ownerId ? [t.ownerId] : [], roles: t.ownerId ? [] : ['PLANNER'], dedupeKey: `task-overdue:${t.id}:${day}` });
     this.logger.log(`scan complete: ${n} notifications`);
     return { notifications: n };
@@ -97,7 +100,7 @@ export class JobsController {
   @Post('reports/generate') @Roles(Role.FINANCE, Role.PLANNER)
   async generate(@Body() dto: GenerateReportDto, @CurrentUser() u: AuthUser) {
     if (dto.type === 'wedding-summary' && !dto.weddingId) throw new BadRequestException('weddingId is required for wedding-summary');
-    if (dto.type === 'profitability' && u.role !== Role.ADMIN && u.role !== Role.FINANCE) throw new BadRequestException('Only finance can generate profitability reports');
+    if (dto.type === 'profitability' && u.role !== Role.FOUNDER && u.role !== Role.FINANCE) throw new BadRequestException('Only finance can generate profitability reports');
     const job = await this.docsQ.add('generate', { ...dto, requestedById: u.id }, { attempts: 2, removeOnComplete: 100, removeOnFail: 100 });
     return { jobId: job.id, status: 'queued' };
   }
@@ -108,7 +111,7 @@ export class JobsController {
     return { status: await job.getState(), result: job.returnvalue ?? null, failedReason: job.failedReason ?? null };
   }
 
-  @Post('jobs/run-reminders') @Roles(Role.ADMIN) async run() { const j = await this.remQ.add('scan', {}, { removeOnComplete: 20 }); return { jobId: j.id }; }
+  @Post('jobs/run-reminders') @Roles(Role.FOUNDER) async run() { const j = await this.remQ.add('scan', {}, { removeOnComplete: 20 }); return { jobId: j.id }; }
 }
 
 @Module({

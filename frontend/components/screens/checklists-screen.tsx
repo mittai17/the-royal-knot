@@ -4,7 +4,7 @@ import { WeddingGate } from '@/components/shared/wedding-gate';
 import { ChecklistsPanel } from '@/components/ops/checklists-panel';
 import { useWedding } from '@/lib/wedding-context';
 
-export default function ChecklistsPage() {
+export function ChecklistsScreen() {
   const { selected } = useWedding();
   return (
     <>

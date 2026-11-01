@@ -3,6 +3,7 @@ import { Prisma, Role, TaskStatus, UserStatus } from '@prisma/client';
 import * as argon2 from 'argon2';
 import { PrismaService } from '../../database/prisma.service';
 import { AuditService } from '../audit/audit.service';
+import { AuthUser } from '../../common/decorators';
 import { CreateUserDto, UpdateUserDto } from './users.dto';
 
 const SAFE = { id: true, email: true, name: true, phone: true, role: true, status: true, available: true, monthlyCost: true, lastLoginAt: true, createdAt: true, mustChangePassword: true, vendorId: true, coupleId: true } satisfies Prisma.UserSelect;
@@ -11,8 +12,31 @@ const SAFE = { id: true, email: true, name: true, phone: true, role: true, statu
 export class UsersService {
   constructor(private prisma: PrismaService, private audit: AuditService) {}
 
-  async list(role?: Role) {
-    return this.prisma.user.findMany({ where: role ? { role } : {}, select: SAFE, orderBy: { name: 'asc' } });
+  /**
+   * Team scoping (Team Management): FOUNDER / SYSADMIN see everyone (company-wide). A PLANNER sees only the people on their own team:
+   * themself, the owners of tasks on weddings they plan, and members of the teams they belong to. Other staff see only themselves in
+   * the people-management views. Returns null when unrestricted.
+   */
+  async assignedTeamIds(u: AuthUser): Promise<string[] | null> {
+    if (u.role === Role.FOUNDER || u.role === Role.SYSADMIN) return null;
+    if (u.role !== Role.PLANNER) return [u.id];
+    const [owners, mine] = await Promise.all([
+      this.prisma.weddingTask.findMany({ where: { ownerId: { not: null }, wedding: { plannerId: u.id } }, select: { ownerId: true }, distinct: ['ownerId'] }),
+      this.prisma.teamMember.findMany({ where: { userId: u.id }, select: { teamId: true } }),
+    ]);
+    const mates = mine.length ? await this.prisma.teamMember.findMany({ where: { teamId: { in: mine.map((t) => t.teamId) } }, select: { userId: true } }) : [];
+    return [...new Set([u.id, ...owners.map((o) => o.ownerId!), ...mates.map((m) => m.userId)])];
+  }
+
+  /** Cost data is Founder-only (SYSADMIN never needs it either). */
+  private redact<T extends { monthlyCost?: unknown }>(u: AuthUser, rows: T[]): T[] {
+    return u.role === Role.FOUNDER ? rows : rows.map((r) => { const { monthlyCost, ...rest } = r; void monthlyCost; return rest as T; });
+  }
+
+  async list(role?: Role, viewer?: AuthUser) {
+    const ids = viewer ? await this.assignedTeamIds(viewer) : null;
+    const rows = await this.prisma.user.findMany({ where: { ...(role ? { role } : {}), ...(ids ? { id: { in: ids } } : {}) }, select: SAFE, orderBy: { name: 'asc' } });
+    return viewer ? this.redact(viewer, rows) : rows;
   }
 
   async create(dto: CreateUserDto, actorId: string) {
@@ -31,28 +55,31 @@ export class UsersService {
   }
 
   /** Team workload: assigned weddings, completed/open/overdue tasks. */
-  async workload() {
-    const users = await this.prisma.user.findMany({ where: { status: UserStatus.ACTIVE, role: { notIn: [Role.CLIENT, Role.VENDOR, Role.SYSADMIN] } }, select: SAFE, orderBy: { name: 'asc' } });
+  async workload(viewer?: AuthUser) {
+    const ids = viewer ? await this.assignedTeamIds(viewer) : null;
+    const users = this.redact(viewer ?? ({ role: Role.FOUNDER } as AuthUser), await this.prisma.user.findMany({ where: { status: UserStatus.ACTIVE, role: { notIn: [Role.CLIENT, Role.VENDOR, Role.SYSADMIN] }, ...(ids ? { id: { in: ids } } : {}) }, select: SAFE, orderBy: { name: 'asc' } }));
     const now = new Date();
     const [weddings, tasks] = await Promise.all([
       this.prisma.wedding.groupBy({ by: ['plannerId'], where: { status: { not: 'CANCELLED' } }, _count: true }),
       this.prisma.weddingTask.groupBy({ by: ['ownerId', 'status'], _count: true }),
     ]);
-    const overdue = await this.prisma.weddingTask.groupBy({ by: ['ownerId'], where: { status: { not: TaskStatus.COMPLETED }, dueDate: { lt: now } }, _count: true });
+    const overdue = await this.prisma.weddingTask.groupBy({ by: ['ownerId'], where: { status: { not: TaskStatus.DONE }, dueDate: { lt: now } }, _count: true });
     return users.map((u) => {
       const t = tasks.filter((x) => x.ownerId === u.id);
-      const completed = t.filter((x) => x.status === 'COMPLETED').reduce((a, x) => a + x._count, 0);
-      const open = t.filter((x) => x.status !== 'COMPLETED').reduce((a, x) => a + x._count, 0);
+      const completed = t.filter((x) => x.status === 'DONE').reduce((a, x) => a + x._count, 0);
+      const open = t.filter((x) => x.status !== 'DONE').reduce((a, x) => a + x._count, 0);
       return { ...u, assignedWeddings: weddings.find((w) => w.plannerId === u.id)?._count ?? 0, completedTasks: completed, openTasks: open, overdueTasks: overdue.find((o) => o.ownerId === u.id)?._count ?? 0 };
     });
   }
 
-  async detail(id: string) {
-    const u = await this.prisma.user.findUnique({ where: { id }, select: SAFE });
-    if (!u) throw new NotFoundException('User not found');
+  async detail(id: string, viewer?: AuthUser) {
+    if (viewer) { const ids = await this.assignedTeamIds(viewer); if (ids && !ids.includes(id)) throw new NotFoundException('User not found'); }
+    const u0 = await this.prisma.user.findUnique({ where: { id }, select: SAFE });
+    if (!u0) throw new NotFoundException('User not found');
+    const u = viewer ? this.redact(viewer, [u0])[0] : u0;
     const [weddings, tasks, activity] = await Promise.all([
       this.prisma.wedding.findMany({ where: { plannerId: id }, select: { id: true, name: true, status: true, startDate: true }, orderBy: { startDate: 'asc' } }),
-      this.prisma.weddingTask.findMany({ where: { ownerId: id, status: { not: 'COMPLETED' } }, orderBy: { dueDate: 'asc' }, take: 20, select: { id: true, name: true, dueDate: true, status: true, priority: true, weddingId: true } }),
+      this.prisma.weddingTask.findMany({ where: { ownerId: id, status: { not: 'DONE' } }, orderBy: { dueDate: 'asc' }, take: 20, select: { id: true, name: true, dueDate: true, status: true, priority: true, weddingId: true } }),
       this.prisma.activityLog.findMany({ where: { actorId: id }, orderBy: { createdAt: 'desc' }, take: 20 }),
     ]);
     return { ...u, weddings, tasks, activity };

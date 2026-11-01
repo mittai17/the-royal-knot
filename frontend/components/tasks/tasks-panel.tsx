@@ -29,7 +29,7 @@ export function TasksPanel({ weddingId }: { weddingId: string }) {
   const all = asRows<Task>(r.data);
   const tasks = all.filter((t) => (!category || t.category === category) && (!mine || t.owner?.id === mine) && (!search || t.name.toLowerCase().includes(search.toLowerCase())));
   const owners = [...new Map(all.filter((t) => t.owner).map((t) => [t.owner!.id, t.owner!.name])).entries()].map(([v, l]) => ({ v, l }));
-  const done = all.filter((t) => t.status === 'COMPLETED').length;
+  const done = all.filter((t) => t.status === 'DONE').length;
   const onSaved = async () => { await r.reload(); setOpen(null); };
 
   const generate = async () => {

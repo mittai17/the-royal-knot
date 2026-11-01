@@ -14,7 +14,7 @@ function build(weddings: { id: string; startDate: Date; endDate: Date }[]) {
   };
   const scope = new ScopeService(prisma as never);
   jest.spyOn(scope, 'weddingIds').mockResolvedValue(weddings.map((w) => w.id));
-  return new PortalClientService(prisma as never, scope, {} as never, {} as never, {} as never, {} as never, {} as never, {} as never, {} as never);
+  return new PortalClientService(prisma as never, scope, {} as never, {} as never, {} as never, {} as never, {} as never, {} as never, {} as never, {} as never);
 }
 
 describe('PortalClientService.resolveWedding', () => {
@@ -31,5 +31,35 @@ describe('PortalClientService.resolveWedding', () => {
   it('404s when the couple has no wedding and 403s when the account has no couple', async () => {
     await expect(build([]).resolveWedding(client)).rejects.toBeInstanceOf(NotFoundException);
     await expect(build([soon]).resolveWedding({ ...(client as object), coupleId: null } as never)).rejects.toBeInstanceOf(ForbiddenException);
+  });
+});
+
+describe('PortalClientService.vendors (agreement gate)', () => {
+  const soon = { id: 'soon', name: 'W', startDate: new Date(Date.now() + 10 * day), endDate: new Date(Date.now() + 12 * day) };
+  function svc(signed: number) {
+    const prisma = {
+      wedding: { findMany: jest.fn().mockResolvedValue([{ ...soon, couple: {}, planner: null }]), findUniqueOrThrow: jest.fn().mockResolvedValue({ ...soon, couple: {}, planner: null }) },
+      agreement: { count: jest.fn().mockResolvedValue(signed) },
+      weddingVendor: { findMany: jest.fn().mockResolvedValue([]) },
+      quotation: { findMany: jest.fn().mockResolvedValue([]) },
+      quotationRequest: { findMany: jest.fn().mockResolvedValue([]) },
+    };
+    const scope = new ScopeService(prisma as never);
+    jest.spyOn(scope, 'weddingIds').mockResolvedValue(['soon']);
+    const s = new PortalClientService(prisma as never, scope, {} as never, {} as never, {} as never, {} as never, {} as never, {} as never, {} as never, {} as never);
+    return { s, prisma };
+  }
+  it('returns the explicit locked state (not an error) and never touches vendor data while the agreement is unsigned', async () => {
+    const { s, prisma } = svc(0);
+    expect(await s.vendors(client)).toEqual({ wedding: { id: 'soon', name: 'W' }, locked: true, reason: 'AGREEMENT_NOT_SIGNED', vendors: [], comparisons: [] });
+    expect(prisma.weddingVendor.findMany).not.toHaveBeenCalled();
+    expect(prisma.quotationRequest.findMany).not.toHaveBeenCalled();
+  });
+  it('unlocks once a SIGNED agreement exists', async () => {
+    const { s } = svc(1);
+    const r = await s.vendors(client);
+    expect(r.locked).toBe(false);
+    expect(r.vendors).toEqual([]);
+    expect(r.comparisons).toEqual([]);
   });
 });

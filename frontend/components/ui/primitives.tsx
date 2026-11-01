@@ -56,10 +56,10 @@ const TONES: Record<string, string> = {
   info: 'bg-info-soft text-info', neutral: 'bg-surface-2 text-ink-soft', gold: 'bg-gold-soft text-[#8A6B2E]', burgundy: 'bg-[#F1E6EA] text-burgundy',
 };
 const STATUS_TONE: Record<string, string> = {
-  COMPLETED: 'success', PAID: 'success', ARRIVED: 'success', CONFIRMED: 'success', ACCEPTED: 'success', APPROVED: 'success', RESOLVED: 'success', SIGNED: 'success', SETTLED: 'success', ACTIVE: 'success', CHECKED_IN: 'success', RECEIVED: 'success', CLOSED: 'success',
-  IN_PROGRESS: 'info', CONTACTED: 'info', DUE: 'warning', UPCOMING: 'neutral', SCHEDULED: 'neutral', SENT: 'info', OPEN: 'info', PROPOSAL_SENT: 'info', CONSULTATION_SCHEDULED: 'info', UNDER_REVIEW: 'info',
-  PARTIALLY_PAID: 'warning', WAITING_FOR_VENDOR: 'warning', NEGOTIATION: 'warning', PENDING: 'warning', DELAYED: 'warning', PLANNING: 'gold', REQUESTED: 'warning', INVESTIGATING: 'warning',
-  IN_REVIEW: 'info', VERIFIED: 'info', FULFILLED: 'success', VOID: 'danger', OVERDUE: 'danger', BLOCKED: 'danger', LOST: 'danger', CANCELLED: 'danger', REJECTED: 'danger', NOT_SELECTED: 'neutral', CRITICAL: 'danger', HIGH: 'danger', MEDIUM: 'warning', LOW: 'neutral', NEW: 'burgundy', TO_PLAN: 'neutral', NOT_ARRIVED: 'neutral', DECLINED: 'danger',
+  COMPLETED: 'success', DONE: 'success', CONVERTED: 'success', SELECTED: 'success', SUCCEEDED: 'success', PAID: 'success', ARRIVED: 'success', CONFIRMED: 'success', ACCEPTED: 'success', APPROVED: 'success', RESOLVED: 'success', SIGNED: 'success', SETTLED: 'success', ACTIVE: 'success', CHECKED_IN: 'success', RECEIVED: 'success', CLOSED: 'success',
+  IN_PROGRESS: 'info', INITIAL_CONSULTATION: 'info', COMPARED: 'info', ON_THE_WAY: 'info', REPORTED: 'info', TRIAGED: 'info', ASSIGNED: 'info', PROCESSING: 'info', DUE: 'warning', UPCOMING: 'neutral', SCHEDULED: 'neutral', SENT: 'info', OPEN: 'info', PROPOSAL_SENT: 'info', UNDER_REVIEW: 'info',
+  PARTIALLY_PAID: 'warning', NEGOTIATION: 'warning', PENDING: 'warning', DELAYED: 'warning', PLANNING: 'gold', REQUESTED: 'warning', INVESTIGATING: 'warning',
+  IN_REVIEW: 'info', VERIFIED: 'info', FULFILLED: 'success', EXPIRED: 'neutral', FAILED: 'danger', REFUNDED: 'warning', DRAFT: 'neutral', AGREEMENT_PENDING: 'warning', PROPOSAL_PENDING: 'warning', DEPOSIT_PENDING: 'warning', NOT_STARTED: 'neutral', FULLY_PAID: 'success', INITIAL_PHASE: 'neutral', VENDOR_BOOKING: 'info', FINANCIAL_CLOSEOUT: 'warning', OVERDUE: 'danger', BLOCKED: 'danger', LOST: 'danger', CANCELLED: 'danger', REJECTED: 'danger', NOT_SELECTED: 'neutral', CRITICAL: 'danger', HIGH: 'danger', MEDIUM: 'warning', LOW: 'neutral', NEW: 'burgundy', TO_PLAN: 'neutral', EXPECTED: 'neutral', DECLINED: 'danger',
 };
 export function StatusBadge({ status, tone }: { status?: string | null; tone?: keyof typeof TONES }) {
   const key = (status ?? '').toUpperCase().replace(/[\s-]+/g, '_');

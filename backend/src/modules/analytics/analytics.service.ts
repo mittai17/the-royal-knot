@@ -1,14 +1,15 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma, Role, TaskStatus } from '@prisma/client';
 import { AuthUser } from '../../common/decorators';
-import { D, money, profitability, sum, vendorSettlement } from '../../common/finance';
+import { byDesc, clientReceived, D, money, profitability, sum, vendorPaid, vendorSettlement } from '../../common/finance';
+import { confirmedWeddingWhere } from '../../common/booking';
 import { PrismaService } from '../../database/prisma.service';
 import { UsersService } from '../users/users.service';
 import { WeddingsService } from '../weddings/weddings.service';
 
 export interface WeddingFinancial {
   weddingId: string; name: string; location: string; startDate: Date; status: string; packageType: string; contractValue: Prisma.Decimal; additionalRevenue: Prisma.Decimal;
-  revenue: Prisma.Decimal; vendorCosts: Prisma.Decimal; teamCosts: Prisma.Decimal; otherExpenses: Prisma.Decimal; grossProfit: Prisma.Decimal; netProfit: Prisma.Decimal; marginPct: number;
+  bookingStatus: string; revenue: Prisma.Decimal; vendorCosts: Prisma.Decimal; teamCosts: Prisma.Decimal; otherExpenses: Prisma.Decimal; grossProfit: Prisma.Decimal; netProfit: Prisma.Decimal; marginPct: number;
   received: Prisma.Decimal; receivables: Prisma.Decimal; vendorPaid: Prisma.Decimal; payables: Prisma.Decimal;
 }
 
@@ -16,34 +17,36 @@ export interface WeddingFinancial {
 export class AnalyticsService {
   constructor(private prisma: PrismaService, private users: UsersService, private weddings: WeddingsService) {}
 
-  /** Bulk (no N+1) per-wedding financials built entirely from DB aggregates. */
+  /**
+   * Bulk (no N+1) per-wedding financials built entirely from DB aggregates. Business totals (revenue, profit, receivables, season) count
+   * CONFIRMED bookings only: drafts never inflate them. Asking for one weddingId always answers for that wedding (so a draft can be looked at).
+   */
   async financials(weddingId?: string): Promise<WeddingFinancial[]> {
-    const wf = { ...(weddingId ? { id: weddingId } : {}), status: { not: 'CANCELLED' as const } };
+    const wf: Prisma.WeddingWhereInput = weddingId ? { id: weddingId } : { ...confirmedWeddingWhere(), status: { not: 'CANCELLED' as const } };
     const [weddings, payments, charges, expenses, wvs] = await Promise.all([
-      this.prisma.wedding.findMany({ where: wf, select: { id: true, name: true, location: true, startDate: true, status: true, packageType: true, contractValue: true } }),
-      this.prisma.clientPayment.groupBy({ by: ['weddingId'], where: weddingId ? { weddingId } : {}, _sum: { amount: true } }),
-      this.prisma.additionalCharge.findMany({ where: { approved: true, ...(weddingId ? { reconciliation: { weddingId } } : {}) }, select: { amount: true, billToClient: true, weddingVendorId: true, reconciliation: { select: { weddingId: true } } } }),
-      this.prisma.expense.groupBy({ by: ['weddingId', 'isTeamCost'], where: { status: 'APPROVED', ...(weddingId ? { weddingId } : {}) }, _sum: { amount: true } }),
-      this.prisma.weddingVendor.findMany({ where: weddingId ? { weddingId } : {}, include: { settlement: true, payments: { select: { amount: true, kind: true } } } }),
+      this.prisma.wedding.findMany({ where: wf, select: { id: true, name: true, location: true, startDate: true, status: true, bookingStatus: true, packageType: true, contractValue: true } }),
+      this.prisma.clientPayment.findMany({ where: weddingId ? { weddingId } : { wedding: wf }, select: { weddingId: true, amount: true, status: true, reversalOfId: true } }),
+      this.prisma.additionalCharge.findMany({ where: { approved: true, ...(weddingId ? { reconciliation: { weddingId } } : { reconciliation: { wedding: wf } }) }, select: { amount: true, billToClient: true, weddingVendorId: true, reconciliation: { select: { weddingId: true } } } }),
+      this.prisma.expense.groupBy({ by: ['weddingId', 'isTeamCost'], where: { status: 'APPROVED', reversalOfId: null, reversedAt: null, ...(weddingId ? { weddingId } : { wedding: wf }) }, _sum: { amount: true } }),
+      this.prisma.weddingVendor.findMany({ where: weddingId ? { weddingId } : { wedding: wf }, include: { settlement: true, payments: { select: { amount: true, kind: true, status: true, reversalOfId: true } } } }),
     ]);
     return weddings.map((w) => {
       const wch = charges.filter((c) => c.reconciliation.weddingId === w.id);
       const additionalRevenue = sum(wch.filter((c) => c.billToClient).map((c) => c.amount));
-      const bills = wvs.filter((v) => v.weddingId === w.id).map((v) => vendorSettlement({ original: v.contractAmount, negotiated: v.negotiatedAmount ?? v.contractAmount, actualInvoice: v.settlement?.actualInvoice, approvedExtras: sum(wch.filter((c) => c.weddingVendorId === v.id).map((c) => c.amount)), paid: sum(v.payments.map((p) => p.amount)), advance: sum(v.payments.filter((p) => p.kind === 'ADVANCE').map((p) => p.amount)) }));
+      const bills = wvs.filter((v) => v.weddingId === w.id).map((v) => vendorSettlement({ original: v.contractAmount, negotiated: v.negotiatedAmount ?? v.contractAmount, actualInvoice: v.settlement?.actualInvoice, approvedExtras: sum(wch.filter((c) => c.weddingVendorId === v.id).map((c) => c.amount)), paid: vendorPaid(v.payments), advance: vendorPaid(v.payments.filter((p) => p.kind === 'ADVANCE')) }));
       const p = profitability({
         revenue: D(w.contractValue).plus(additionalRevenue), vendorCosts: sum(bills.map((b) => b.finalBill)), vendorPaid: sum(bills.map((b) => b.paid)),
         teamCosts: expenses.find((e) => e.weddingId === w.id && e.isTeamCost)?._sum.amount ?? 0, otherExpenses: expenses.find((e) => e.weddingId === w.id && !e.isTeamCost)?._sum.amount ?? 0,
-        received: payments.find((x) => x.weddingId === w.id)?._sum.amount ?? 0,
+        received: clientReceived(payments.filter((x) => x.weddingId === w.id)),
       });
-      return { weddingId: w.id, name: w.name, location: w.location, startDate: w.startDate, status: w.status, packageType: w.packageType, contractValue: w.contractValue, additionalRevenue: money(additionalRevenue), ...p };
+      return { weddingId: w.id, name: w.name, location: w.location, startDate: w.startDate, status: w.status, bookingStatus: w.bookingStatus, packageType: w.packageType, contractValue: w.contractValue, additionalRevenue: money(additionalRevenue), ...p };
     });
   }
 
   async profitability(sort = 'netProfit', order: 'asc' | 'desc' = 'desc') {
     const rows = await this.financials();
     const key = sort as keyof WeddingFinancial;
-    const v = (r: WeddingFinancial) => Number(r[key] instanceof Prisma.Decimal ? (r[key] as Prisma.Decimal).toString() : r[key]);
-    rows.sort((a, b) => (order === 'desc' ? v(b) - v(a) : v(a) - v(b)));
+    rows.sort((a, b) => { const x = a[key], y = b[key]; if (x instanceof Prisma.Decimal && y instanceof Prisma.Decimal) return order === 'desc' ? y.comparedTo(x) : x.comparedTo(y); const n = Number(x) - Number(y); return order === 'desc' ? -n : n; });
     return { weddings: rows, totals: this.totals(rows) };
   }
 
@@ -68,15 +71,15 @@ export class AnalyticsService {
   }
 
   async upcomingClientPayments(take = 10) {
-    const rows = await this.prisma.paymentMilestone.findMany({ where: { status: { not: 'PAID' } }, include: { payments: true, wedding: { select: { id: true, name: true } } }, orderBy: { dueDate: 'asc' }, take: 60 });
-    return rows.map((r) => ({ id: r.id, weddingId: r.weddingId, wedding: r.wedding.name, type: r.type, dueDate: r.dueDate, expected: r.expectedAmount, received: sum(r.payments.map((p) => p.amount)) })).map((r) => ({ ...r, outstanding: money(D(r.expected).minus(r.received)), overdue: r.dueDate < new Date() })).filter((r) => r.outstanding.gt(0)).slice(0, take);
+    const rows = await this.prisma.paymentMilestone.findMany({ where: { status: { not: 'PAID' }, wedding: { ...confirmedWeddingWhere(), status: { not: 'CANCELLED' } } }, include: { payments: true, wedding: { select: { id: true, name: true } } }, orderBy: { dueDate: 'asc' }, take: 60 });
+    return rows.map((r) => ({ id: r.id, weddingId: r.weddingId, wedding: r.wedding.name, type: r.type, dueDate: r.dueDate, expected: r.expectedAmount, received: clientReceived(r.payments) })).map((r) => ({ ...r, outstanding: money(D(r.expected).minus(r.received)), overdue: r.dueDate < new Date() })).filter((r) => r.outstanding.gt(0)).slice(0, take);
   }
 
   async upcomingVendorPayments(take = 10) {
-    const wvs = await this.prisma.weddingVendor.findMany({ where: { wedding: { status: { not: 'CANCELLED' } } }, include: { vendor: { select: { name: true } }, wedding: { select: { id: true, name: true, endDate: true } }, settlement: true, payments: { select: { amount: true } } } });
+    const wvs = await this.prisma.weddingVendor.findMany({ where: { wedding: { ...confirmedWeddingWhere(), status: { not: 'CANCELLED' } } }, include: { vendor: { select: { name: true } }, wedding: { select: { id: true, name: true, endDate: true } }, settlement: true, payments: { select: { amount: true, status: true, reversalOfId: true } } } });
     const charges = await this.prisma.additionalCharge.findMany({ where: { approved: true, weddingVendorId: { not: null } }, select: { weddingVendorId: true, amount: true } });
     return wvs.map((v) => {
-      const b = vendorSettlement({ original: v.contractAmount, negotiated: v.negotiatedAmount ?? v.contractAmount, actualInvoice: v.settlement?.actualInvoice, approvedExtras: sum(charges.filter((c) => c.weddingVendorId === v.id).map((c) => c.amount)), paid: sum(v.payments.map((p) => p.amount)), advance: 0 });
+      const b = vendorSettlement({ original: v.contractAmount, negotiated: v.negotiatedAmount ?? v.contractAmount, actualInvoice: v.settlement?.actualInvoice, approvedExtras: sum(charges.filter((c) => c.weddingVendorId === v.id).map((c) => c.amount)), paid: vendorPaid(v.payments), advance: 0 });
       return { weddingVendorId: v.id, weddingId: v.weddingId, wedding: v.wedding.name, vendor: v.vendor.name, category: v.category, dueDate: new Date(v.wedding.endDate.getTime() + 7 * 864e5), remainingPayable: b.remainingPayable, finalBill: b.finalBill };
     }).filter((x) => x.remainingPayable.gt(0)).sort((a, b) => a.dueDate.getTime() - b.dueDate.getTime()).slice(0, take);
   }
@@ -84,10 +87,10 @@ export class AnalyticsService {
   async overview() {
     const rows = await this.financials();
     const byMargin = [...rows].sort((a, b) => b.marginPct - a.marginPct);
-    const status = await this.prisma.wedding.groupBy({ by: ['status'], _count: true });
+    const status = await this.prisma.wedding.groupBy({ by: ['status'], where: confirmedWeddingWhere(), _count: true });
     return {
       totals: this.totals(rows), statusCounts: Object.fromEntries(status.map((s) => [s.status, s._count])), monthly: this.monthly(rows),
-      mostProfitable: [...rows].sort((a, b) => Number(b.netProfit.minus(a.netProfit))).slice(0, 5), lowestMargin: byMargin.filter((r) => r.revenue.gt(0)).slice(-5).reverse(),
+      mostProfitable: [...rows].sort(byDesc((x) => x.netProfit)).slice(0, 5), lowestMargin: byMargin.filter((r) => r.revenue.gt(0)).slice(-5).reverse(),
       upcomingClientPayments: await this.upcomingClientPayments(8), upcomingVendorPayments: await this.upcomingVendorPayments(8),
     };
   }
@@ -97,7 +100,7 @@ export class AnalyticsService {
   async vendors() {
     const vs = await this.prisma.vendor.findMany({ where: { active: true }, include: { weddingVendors: { include: { arrival: true, settlement: true } } }, orderBy: { name: 'asc' } });
     return vs.map((v) => {
-      const arr = v.weddingVendors.filter((w) => w.arrival && w.arrival.status !== 'NOT_ARRIVED').map((w) => w.arrival!);
+      const arr = v.weddingVendors.filter((w) => w.arrival && w.arrival.status !== 'EXPECTED').map((w) => w.arrival!);
       const onTime = arr.filter((a) => a.delayMinutes <= 10).length;
       const settled = v.weddingVendors.filter((w) => w.settlement?.actualInvoice);
       const quoted = sum(settled.map((w) => w.settlement!.negotiated)), actual = sum(settled.map((w) => w.settlement!.actualInvoice));
@@ -117,12 +120,12 @@ export class AnalyticsService {
     const dayStart = new Date(now); dayStart.setUTCHours(0, 0, 0, 0);
     const dayEnd = new Date(dayStart.getTime() + 864e5);
     const [activeWeddings, totalWeddings, activeEnquiries, vendors, taskGroups, overdue, recentEnquiries, recentActivity, ongoing, todayWedding] = await Promise.all([
-      this.prisma.wedding.count({ where: { status: { in: ['PLANNING', 'VENDOR_BOOKING', 'EVENT_DAY'] } } }),
-      this.prisma.wedding.count({ where: { status: { not: 'CANCELLED' } } }),
-      this.prisma.enquiry.count({ where: { stage: { notIn: ['CONFIRMED', 'LOST'] } } }),
+      this.prisma.wedding.count({ where: { ...confirmedWeddingWhere(), status: { in: ['PLANNING', 'VENDOR_BOOKING', 'EVENT_DAY'] } } }),
+      this.prisma.wedding.count({ where: { ...confirmedWeddingWhere(), status: { not: 'CANCELLED' } } }),
+      this.prisma.enquiry.count({ where: { stage: { notIn: ['CONVERTED', 'LOST'] } } }),
       this.prisma.weddingVendor.findMany({ distinct: ['vendorId'], select: { vendorId: true } }),
       this.prisma.weddingTask.groupBy({ by: ['status'], _count: true }),
-      this.prisma.weddingTask.count({ where: { status: { not: 'COMPLETED' }, dueDate: { lt: now } } }),
+      this.prisma.weddingTask.count({ where: { status: { not: 'DONE' }, dueDate: { lt: now } } }),
       this.prisma.enquiry.findMany({ orderBy: { createdAt: 'desc' }, take: 5, include: { couple: true, assignedTo: { select: { name: true } } } }),
       this.prisma.activityLog.findMany({ orderBy: { createdAt: 'desc' }, take: 8, include: { actor: { select: { name: true } }, wedding: { select: { name: true } } } }),
       this.prisma.wedding.findMany({ where: { status: { in: ['PLANNING', 'VENDOR_BOOKING', 'EVENT_DAY'] } }, orderBy: { startDate: 'asc' }, take: 4, include: { planner: { select: { name: true } } } }),

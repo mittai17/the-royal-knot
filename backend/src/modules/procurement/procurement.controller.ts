@@ -11,8 +11,8 @@ const READ = [Role.PLANNER, Role.FINANCE, Role.VENDOR];
 @ApiTags('procurement') @ApiCookieAuth() @Controller('procurement') @Roles(Role.PLANNER, Role.FINANCE)
 export class ProcurementController {
   constructor(private svc: ProcurementService) {}
-  @Get('rfqs') rfqs(@Query('weddingId') weddingId?: string, @Query('category') category?: VendorCategory) { return this.svc.rfqs({ weddingId, category }); }
-  @Get('comparison') comparison(@Query('weddingId', ParseUUIDPipe) weddingId: string, @Query('category') category?: VendorCategory, @Query('rfqGroup') rfqGroup?: string) { return this.svc.comparison(weddingId, category, rfqGroup); }
+  @Get('rfqs') rfqs(@CurrentUser() u: AuthUser, @Query('weddingId') weddingId?: string, @Query('category') category?: VendorCategory) { return this.svc.rfqs({ weddingId, category }, u); }
+  @Get('comparison') comparison(@CurrentUser() u: AuthUser, @Query('weddingId', ParseUUIDPipe) weddingId: string, @Query('category') category?: VendorCategory, @Query('rfqGroup') rfqGroup?: string) { return this.svc.comparison(weddingId, category, rfqGroup, u); }
 
   // Vendors may read their own (non-draft) orders and accept them.
   @Get('purchase-orders') @Roles(READ) list(@Query() q: PoQuery, @CurrentUser() u: AuthUser) { return this.svc.list(q, u); }

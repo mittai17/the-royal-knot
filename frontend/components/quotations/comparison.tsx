@@ -41,7 +41,7 @@ export function Comparison({ data, onEnter, onChanged }: { data: Cmp; onEnter: (
           <thead>
             <tr><th className="w-[200px] bg-surface-2/60 border-b border-line" />
               {quotes.map((q) => (
-                <th key={q.quotationId} className={cn('text-left align-top p-4 border-b border-line min-w-[230px]', q.requestStatus === 'ACCEPTED' ? 'bg-success-soft/60' : q.requestStatus === 'NOT_SELECTED' ? 'bg-surface-2/60 opacity-70' : q.flags.recommended ? 'bg-gold-soft/50' : 'bg-surface-2/60')}>
+                <th key={q.quotationId} className={cn('text-left align-top p-4 border-b border-line min-w-[230px]', q.requestStatus === 'SELECTED' ? 'bg-success-soft/60' : q.requestStatus === 'CLOSED' ? 'bg-surface-2/60 opacity-70' : q.flags.recommended ? 'bg-gold-soft/50' : 'bg-surface-2/60')}>
                   <div className="flex items-start justify-between gap-2"><div><p className="font-serif text-base text-burgundy-deep font-normal">{q.vendor.name}</p><Rating value={q.vendor.rating} /></div><StatusBadge status={q.requestStatus} /></div>
                   <div className="mt-2"><Badges f={q.flags} /></div>
                 </th>
@@ -79,11 +79,11 @@ export function Comparison({ data, onEnter, onChanged }: { data: Cmp; onEnter: (
             <tr><td className="p-4" />
               {quotes.map((q) => (
                 <td key={q.quotationId} className="p-4">
-                  {q.requestStatus === 'ACCEPTED' ? <span className="inline-flex items-center gap-1.5 text-success text-sm font-medium"><CheckCircle2 className="h-4 w-4" />Selected</span>
-                    : q.requestStatus === 'NOT_SELECTED' ? <span className="inline-flex items-center gap-1.5 text-ink-soft text-sm"><X className="h-4 w-4" />Not selected</span>
+                  {q.requestStatus === 'SELECTED' ? <span className="inline-flex items-center gap-1.5 text-success text-sm font-medium"><CheckCircle2 className="h-4 w-4" />Selected</span>
+                    : q.requestStatus === 'CLOSED' ? <span className="inline-flex items-center gap-1.5 text-ink-soft text-sm"><X className="h-4 w-4" />Not selected</span>
                     : <div className="flex gap-2"><button className="btn-secondary btn-sm" onClick={() => onEnter(target(q))}><Pencil className="h-3.5 w-3.5" />Edit</button>{!data.decided && <button className="btn-primary btn-sm" onClick={() => setConfirm(q)}>Select</button>}</div>}
                 </td>))}
-              {data.pending.map((p) => <td key={p.requestId} className="p-4">{p.status === 'NOT_SELECTED' ? <span className="text-ink-soft text-sm">Closed</span> : <button className="btn-secondary btn-sm" onClick={() => onEnter({ requestId: p.requestId, vendorName: p.vendor.name, category: data.category, expectedGuests: data.expectedGuests })}><Pencil className="h-3.5 w-3.5" />Enter quote</button>}</td>)}
+              {data.pending.map((p) => <td key={p.requestId} className="p-4">{p.status === 'CLOSED' ? <span className="text-ink-soft text-sm">Closed</span> : <button className="btn-secondary btn-sm" onClick={() => onEnter({ requestId: p.requestId, vendorName: p.vendor.name, category: data.category, expectedGuests: data.expectedGuests })}><Pencil className="h-3.5 w-3.5" />Enter quote</button>}</td>)}
             </tr>
           </tbody>
         </table>

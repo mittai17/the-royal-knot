@@ -20,8 +20,8 @@ export function OverviewTab({ w }: { w: Wedding }) {
   const pay = useApi<{ totals?: { received: string; outstanding: string } }>(canSeeMoney ? `/weddings/${w.id}/payments` : null);
   const tasks = useApi<unknown>(`/weddings/${w.id}/tasks`, { pageSize: 500 });
   const t = asRows<{ status: string; dueDate: string }>(tasks.data);
-  const done = t.filter((x) => x.status === 'COMPLETED').length;
-  const overdue = t.filter((x) => x.status !== 'COMPLETED' && new Date(x.dueDate) < new Date()).length;
+  const done = t.filter((x) => x.status === 'DONE').length;
+  const overdue = t.filter((x) => x.status !== 'DONE' && new Date(x.dueDate) < new Date()).length;
   const days = Math.ceil((new Date(w.startDate).getTime() - Date.now()) / 86400000);
   return (
     <div className="space-y-5">

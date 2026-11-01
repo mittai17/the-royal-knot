@@ -51,7 +51,7 @@ export class DeliverableDto { @IsBoolean() done: boolean; @IsOptional() @IsStrin
 export class CheckDto { @IsOptional() @IsString() @MaxLength(500) notes?: string; }
 export class RespondDto { @IsString() @MaxLength(1500) text: string; }
 export class VendorTaskDto {
-  @IsOptional() @IsIn([TaskStatus.IN_PROGRESS, TaskStatus.UNDER_REVIEW, TaskStatus.COMPLETED, TaskStatus.BLOCKED]) status?: TaskStatus;
+  @IsOptional() @IsIn([TaskStatus.IN_PROGRESS, TaskStatus.DONE, TaskStatus.BLOCKED]) status?: TaskStatus;
   @IsOptional() @IsString() @MaxLength(1000) evidenceNote?: string;
 }
 export const VENDOR_DOC_CATEGORIES: DocumentCategory[] = ['VENDOR_QUOTATION', 'VENDOR_CONTRACT', 'INVOICE', 'EVIDENCE', 'PHOTO', 'OTHER'];

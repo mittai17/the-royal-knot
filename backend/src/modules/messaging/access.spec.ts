@@ -4,8 +4,8 @@ import { staffCanSee, staffThreadWhere } from './access';
 const base = { memberIds: [] as string[], hasWedding: true, weddingPlannerId: 'p1' };
 describe('messaging access', () => {
   it('admin sees everything', () => {
-    expect(staffThreadWhere({ id: 'a', role: Role.ADMIN })).toEqual({});
-    expect(staffCanSee({ id: 'a', role: Role.ADMIN }, { ...base, channel: ThreadChannel.CLIENT })).toBe(true);
+    expect(staffThreadWhere({ id: 'a', role: Role.FOUNDER })).toEqual({});
+    expect(staffCanSee({ id: 'a', role: Role.FOUNDER }, { ...base, channel: ThreadChannel.CLIENT })).toBe(true);
   });
   it('planner only sees client threads of own weddings', () => {
     expect(staffCanSee({ id: 'p1', role: Role.PLANNER }, { ...base, channel: ThreadChannel.CLIENT })).toBe(true);

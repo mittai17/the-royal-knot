@@ -51,17 +51,17 @@ export function VendorCheckin() {
     { id: 'vendor', header: 'Vendor', cell: ({ row: { original: r } }) => <div className="min-w-0"><p className="font-medium truncate">{r.vendor.name}</p><p className="text-xs text-ink-soft">{humanize(r.category)} · {r.wedding.name}</p></div> },
     { id: 'expected', header: 'Expected', cell: ({ row: { original: r } }) => r.arrival ? <span className="tabular-nums">{fmtTime(r.arrival.expectedAt)}</span> : <span className="text-ink-soft text-xs">Not tracked</span> },
     { id: 'actual', header: 'Arrived', cell: ({ row: { original: r } }) => r.arrival?.actualAt ? <span className="tabular-nums">{fmtTime(r.arrival.actualAt)}</span> : '—' },
-    { id: 'status', header: 'Status', cell: ({ row: { original: r } }) => <div className="space-y-0.5"><StatusBadge status={r.arrival?.status ?? 'NOT_ARRIVED'} />{(r.arrival?.delayMinutes ?? 0) > 0 && <p className="text-[11px] text-danger font-medium">+{r.arrival!.delayMinutes} min</p>}{r.overdueMinutes > 0 && <p className="text-[11px] text-warning font-medium">{r.overdueMinutes} min overdue</p>}</div> },
+    { id: 'status', header: 'Status', cell: ({ row: { original: r } }) => <div className="space-y-0.5"><StatusBadge status={r.arrival?.status ?? 'EXPECTED'} />{(r.arrival?.delayMinutes ?? 0) > 0 && <p className="text-[11px] text-danger font-medium">+{r.arrival!.delayMinutes} min</p>}{r.overdueMinutes > 0 && <p className="text-[11px] text-warning font-medium">{r.overdueMinutes} min overdue</p>}</div> },
     { id: 'contact', header: 'Contact', cell: ({ row: { original: r } }) => { const phone = r.arrival?.contactPhone ?? r.vendor.phone; return <div className="text-xs"><p>{r.arrival?.contactName ?? r.vendor.contactName}</p><a href={`tel:${phone.replace(/\s/g, '')}`} className="inline-flex items-center gap-1 text-burgundy hover:underline"><Phone className="h-3 w-3" />{phone}</a></div>; } },
     ...(ops ? [{ id: 'act', header: '', enableSorting: false, cell: ({ row: { original: r } }) => {
       const s = r.arrival?.status; const b = busy === r.id;
       return (
         <div className="flex flex-wrap justify-end gap-1">
           {!r.arrival && <button disabled={b} className="btn-secondary btn-sm" onClick={() => { setTrack(r); setTime(''); }}>Track</button>}
-          {(!s || s === 'NOT_ARRIVED' || s === 'DELAYED') && r.arrival && <button disabled={b} className="btn-secondary btn-sm" onClick={() => post(r, { status: 'ARRIVED' }, `${r.vendor.name} marked arrived`)}><UserCheck className="h-3 w-3" />Arrived</button>}
-          {s === 'NOT_ARRIVED' && <button disabled={b} className="btn-ghost btn-sm" onClick={() => { setDelay(r); setMins('30'); }}><Clock className="h-3 w-3" />Delayed</button>}
+          {(!s || s === 'EXPECTED' || s === 'DELAYED') && r.arrival && <button disabled={b} className="btn-secondary btn-sm" onClick={() => post(r, { status: 'ARRIVED' }, `${r.vendor.name} marked arrived`)}><UserCheck className="h-3 w-3" />Arrived</button>}
+          {s === 'EXPECTED' && <button disabled={b} className="btn-ghost btn-sm" onClick={() => { setDelay(r); setMins('30'); }}><Clock className="h-3 w-3" />Delayed</button>}
           {s === 'ARRIVED' && <button disabled={b} className="btn-secondary btn-sm" onClick={() => post(r, { status: 'COMPLETED' }, `${r.vendor.name} checked out`)}><LogOut className="h-3 w-3" />Check out</button>}
-          {(s === 'ARRIVED' || s === 'COMPLETED') && <button disabled={b} className="btn-ghost btn-sm" onClick={() => post(r, { status: 'NOT_ARRIVED' }, 'Arrival reset')}>Undo</button>}
+          {(s === 'ARRIVED' || s === 'COMPLETED') && <button disabled={b} className="btn-ghost btn-sm" onClick={() => post(r, { status: 'EXPECTED' }, 'Arrival reset')}>Undo</button>}
           {s !== 'ARRIVED' && s !== 'COMPLETED' && <button disabled={b} className="btn-ghost btn-sm !px-2" aria-label={`Remind ${r.vendor.name}`} title="Send reminder" onClick={() => notifyVendor(r)}><Bell className="h-3.5 w-3.5" /></button>}
         </div>
       );

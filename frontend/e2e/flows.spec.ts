@@ -4,7 +4,7 @@ import { test, expect, type Browser, type Page } from '@playwright/test';
 test.describe.configure({ mode: 'serial' });
 
 type Json = Record<string, any>;
-let planner: Page, finance: Page;
+let planner: Page, finance: Page, founder: Page;
 let wid = '';
 const RUN = Date.now().toString(36);
 
@@ -25,9 +25,10 @@ const pickWedding = (p: Page) => p.evaluate((id) => localStorage.setItem('rk.wed
 test.beforeAll(async ({ browser }) => {
   planner = await login(browser, 'neha');
   finance = await login(browser, 'meera');
+  founder = await login(browser, 'founder');
   const w = await j(await planner.request.post('/api/v1/weddings', { data: { brideName: 'Flow Bride', groomName: `${RUN} Groom`, location: 'Jaipur', startDate: new Date(Date.now() + 60 * 864e5).toISOString(), expectedGuests: 400, packageType: 'FULL_SERVICE', budget: 5000000, contractValue: 4000000 } }));
   wid = w.id;
-  for (const p of [planner, finance]) await pickWedding(p);
+  for (const p of [planner, finance, founder]) await pickWedding(p);
 });
 
 test('agreement: generate, capture a drawn signature, sign', async () => {
@@ -78,11 +79,26 @@ test('guests: CSV import shows a preview and creates the rows', async () => {
 });
 
 test('payments: finance records the booking milestone in the UI, tasks auto-generate once', async () => {
+  // Master spec: wedding requires accepted proposal + signed agreement + verified deposit to confirm & auto-plan
+  const prop = await j(await planner.request.post('/api/v1/proposals', { data: { weddingId: wid, title: `${RUN} final proposal`, packageName: 'Full-Service', amount: 4000000 } }));
+  await planner.request.post(`/api/v1/proposals/${prop.id}/send`, { data: {} });
+  await planner.request.post(`/api/v1/proposals/${prop.id}/respond`, { data: { status: 'ACCEPTED' } });
+
   await finance.goto('/payments');
   await finance.locator('button:has-text("Record payment"):not([disabled])').first().click();
   await dlg(finance).locator('button:has-text("Fill full outstanding")').click();
   await dlg(finance).locator('.btn-primary').click();
   await expect(finance.locator('text=Payment recorded').first()).toBeVisible({ timeout: 10_000 });
+
+  const payments = await j(await finance.request.get(`/api/v1/payments?weddingId=${wid}`));
+  const bookingPay = (Array.isArray(payments) ? payments : payments.items || [])[0];
+  if (bookingPay?.id) {
+    const vr = await founder.request.post(`/api/v1/payments/${bookingPay.id}/verify`, { data: {} });
+    expect(vr.ok()).toBeTruthy();
+  }
+  const cr = await planner.request.post(`/api/v1/weddings/${wid}/confirm`);
+  expect(cr.ok()).toBeTruthy();
+
   const t = await j(await planner.request.get(`/api/v1/weddings/${wid}/tasks?pageSize=100`));
   expect((Array.isArray(t) ? t : t.items).length).toBeGreaterThan(25);
 });

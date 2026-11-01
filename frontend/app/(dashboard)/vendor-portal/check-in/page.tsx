@@ -25,7 +25,7 @@ export default function Page() {
         {(rows) => rows.length === 0 ? <Card><EmptyState title="No events within the check-in window" hint="Check-in opens one day before a wedding you are booked for." /></Card> : (
           <div className="grid gap-5 md:grid-cols-2">
             {rows.map((r) => {
-              const s = r.arrival?.status ?? 'NOT_ARRIVED';
+              const s = r.arrival?.status ?? 'EXPECTED';
               const arrived = s === 'ARRIVED' || s === 'DELAYED';
               return (
                 <Card key={r.bookingId} title={r.wedding.name} action={<StatusBadge status={s} />}>
@@ -36,7 +36,7 @@ export default function Page() {
                     <div><dt className="text-xs text-ink-soft">Checked in</dt><dd>{r.arrival?.actualAt ? fmtDateTime(r.arrival.actualAt) : '—'}{r.arrival && r.arrival.delayMinutes > 0 ? <span className="text-warning"> · {r.arrival.delayMinutes} min late</span> : null}</dd></div>
                   </dl>
                   <div className="flex gap-3 mt-5">
-                    <button className="btn-primary flex-1 justify-center h-12 text-base" disabled={!r.windowOpen || s !== 'NOT_ARRIVED' || !!busy} onClick={() => act(r.bookingId, 'arrive')}>{busy === r.bookingId + 'arrive' ? <Loader2 className="h-5 w-5 animate-spin" /> : <LogIn className="h-5 w-5" />}Check in</button>
+                    <button className="btn-primary flex-1 justify-center h-12 text-base" disabled={!r.windowOpen || s !== 'EXPECTED' || !!busy} onClick={() => act(r.bookingId, 'arrive')}>{busy === r.bookingId + 'arrive' ? <Loader2 className="h-5 w-5 animate-spin" /> : <LogIn className="h-5 w-5" />}Check in</button>
                     <button className="btn-secondary flex-1 justify-center h-12 text-base" disabled={!arrived || !!busy} onClick={() => act(r.bookingId, 'depart')}>{busy === r.bookingId + 'depart' ? <Loader2 className="h-5 w-5 animate-spin" /> : <LogOut className="h-5 w-5" />}Check out</button>
                   </div>
                   {!r.windowOpen && <p className="text-xs text-ink-soft mt-3">Check-in opens one day before the wedding starts.</p>}

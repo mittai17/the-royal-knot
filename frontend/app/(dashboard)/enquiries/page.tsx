@@ -24,7 +24,7 @@ const cols: ColumnDef<Enquiry, unknown>[] = [
   { id: 'budget', header: 'Budget', cell: ({ row: { original: e } }) => <span className="num">{e.budget ? inrCompact(e.budget) : '—'}</span> },
   { id: 'source', header: 'Source', enableSorting: false, cell: ({ row: { original: e } }) => humanize(e.source) },
   { id: 'stage', header: 'Stage', enableSorting: false, cell: ({ row: { original: e } }) => <StatusBadge status={e.stage} /> },
-  { id: 'followUpAt', header: 'Follow-up', cell: ({ row: { original: e } }) => { const late = e.followUpAt && new Date(e.followUpAt) < new Date() && !['CONFIRMED', 'LOST'].includes(e.stage); return <span className={late ? 'text-danger font-medium' : ''}>{fmtDate(e.followUpAt, 'dd MMM')}</span>; } },
+  { id: 'followUpAt', header: 'Follow-up', cell: ({ row: { original: e } }) => { const late = e.followUpAt && new Date(e.followUpAt) < new Date() && !['CONVERTED', 'LOST'].includes(e.stage); return <span className={late ? 'text-danger font-medium' : ''}>{fmtDate(e.followUpAt, 'dd MMM')}</span>; } },
   { id: 'assignedTo', header: 'Assigned to', enableSorting: false, cell: ({ row: { original: e } }) => e.assignedTo ? <span className="inline-flex items-center gap-2"><Avatar name={e.assignedTo.name} size={24} />{e.assignedTo.name}</span> : <span className="text-ink-soft">Unassigned</span> },
 ];
 

@@ -1,7 +1,9 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { AuthUser } from '../../common/decorators';
-import { D, money, sum } from '../../common/finance';
+import { byDesc, clientReceived, D, money, sum, vendorPaid } from '../../common/finance';
+import { confirmedWeddingWhere } from '../../common/booking';
+import { RESERVING } from '../vendor-payments/vendor-payments.service';
 import { inr } from '../../common/pdf-templates';
 import { PrismaService } from '../../database/prisma.service';
 import { AnalyticsService } from '../analytics/analytics.service';
@@ -9,6 +11,9 @@ import { ApprovalsService } from '../approvals/approvals.service';
 import { AuditService } from '../audit/audit.service';
 import { BudgetItemDto, CreateBudgetDto, UpdateBudgetDto } from './budgets.dto';
 import { FlowEvent, monthKey, monthRange, normCat, rollMonths, titleCat, variance } from './budget-math';
+
+/** Business-wide figures count confirmed bookings only; asking for one wedding answers for that wedding (so a draft can still be reviewed). */
+const scopeWed = (weddingId?: string): Prisma.WeddingWhereInput => (weddingId ? { id: weddingId } : { ...confirmedWeddingWhere(), status: { not: 'CANCELLED' } });
 
 const include = { items: { orderBy: { category: 'asc' } }, wedding: { select: { id: true, name: true, status: true, startDate: true } } } satisfies Prisma.BudgetInclude;
 
@@ -19,14 +24,14 @@ export class BudgetsService {
   /** What each wedding vendor will cost: actual invoice if settled, else negotiated, plus approved extras. */
   private async vendorCosts(weddingId?: string) {
     const [wvs, charges] = await Promise.all([
-      this.prisma.weddingVendor.findMany({ where: { ...(weddingId ? { weddingId } : {}), wedding: { status: { not: 'CANCELLED' } } }, include: { vendor: { select: { id: true, name: true } }, settlement: true, payments: { select: { amount: true } } } }),
-      this.prisma.additionalCharge.findMany({ where: { approved: true, weddingVendorId: { not: null }, ...(weddingId ? { reconciliation: { weddingId } } : {}) }, select: { weddingVendorId: true, amount: true } }),
+      this.prisma.weddingVendor.findMany({ where: { ...(weddingId ? { weddingId } : {}), wedding: scopeWed(weddingId) }, include: { vendor: { select: { id: true, name: true } }, settlement: true, payments: { select: { amount: true, status: true, reversalOfId: true } } } }),
+      this.prisma.additionalCharge.findMany({ where: { approved: true, weddingVendorId: { not: null }, reconciliation: { wedding: scopeWed(weddingId) } }, select: { weddingVendorId: true, amount: true } }),
     ]);
     return wvs.map((w) => {
       const committed = D(w.negotiatedAmount ?? w.contractAmount);
       const extras = sum(charges.filter((c) => c.weddingVendorId === w.id).map((c) => c.amount));
       const billed = w.settlement?.actualInvoice != null ? D(w.settlement.actualInvoice) : committed.plus(extras);
-      return { id: w.id, weddingId: w.weddingId, vendorId: w.vendorId, vendor: w.vendor.name, category: w.category as string, committed, billed, paid: sum(w.payments.map((p) => p.amount)) };
+      return { id: w.id, weddingId: w.weddingId, vendorId: w.vendorId, vendor: w.vendor.name, category: w.category as string, committed, billed, paid: vendorPaid(w.payments) };
     });
   }
 
@@ -42,9 +47,9 @@ export class BudgetsService {
     const [fin, budgets, lines, vcs, expenses] = await Promise.all([
       this.analytics.financials(weddingId),
       this.latestBudgets(weddingId),
-      this.prisma.budgetLine.findMany({ where: weddingId ? { weddingId } : {} }),
+      this.prisma.budgetLine.findMany({ where: { wedding: scopeWed(weddingId) } }),
       this.vendorCosts(weddingId),
-      this.prisma.expense.groupBy({ by: ['weddingId', 'category'], where: { status: 'APPROVED', ...(weddingId ? { weddingId } : {}) }, _sum: { amount: true } }),
+      this.prisma.expense.groupBy({ by: ['weddingId', 'category'], where: { status: 'APPROVED', reversalOfId: null, reversedAt: null, wedding: scopeWed(weddingId) }, _sum: { amount: true } }),
     ]);
     const plannedFor = (wid: string) => {
       const b = budgets.find((x) => x.weddingId === wid);
@@ -69,14 +74,14 @@ export class BudgetsService {
     for (const f of fin) if (budgeted.has(f.weddingId)) plannedFor(f.weddingId).items.forEach((i) => bump(i.category, 'planned', i.planned));
     vcs.filter((v) => budgeted.has(v.weddingId)).forEach((v) => { bump(v.category, 'committed', v.committed); bump(v.category, 'actual', v.billed); });
     expenses.filter((e) => budgeted.has(e.weddingId)).forEach((e) => bump(e.category, 'actual', e._sum.amount ?? 0));
-    const byCategory = [...cats.values()].map((c) => ({ ...c, planned: money(c.planned), committed: money(c.committed), actual: money(c.actual), ...variance(c.planned, c.actual) })).sort((a, b) => Number(b.actual.minus(a.actual)));
+    const byCategory = [...cats.values()].map((c) => ({ ...c, planned: money(c.planned), committed: money(c.committed), actual: money(c.actual), ...variance(c.planned, c.actual) })).sort(byDesc((c) => c.actual));
 
     const vend = new Map<string, { vendorId: string; vendor: string; bookings: number; committed: Prisma.Decimal; billed: Prisma.Decimal; paid: Prisma.Decimal }>();
     for (const v of vcs) {
       const cur = vend.get(v.vendorId) ?? { vendorId: v.vendorId, vendor: v.vendor, bookings: 0, committed: D(0), billed: D(0), paid: D(0) };
       vend.set(v.vendorId, { ...cur, bookings: cur.bookings + 1, committed: cur.committed.plus(v.committed), billed: cur.billed.plus(v.billed), paid: cur.paid.plus(v.paid) });
     }
-    const byVendor = [...vend.values()].map((v) => ({ ...v, committed: money(v.committed), billed: money(v.billed), paid: money(v.paid), remaining: money(v.billed.minus(v.paid).lt(0) ? D(0) : v.billed.minus(v.paid)) })).sort((a, b) => Number(b.billed.minus(a.billed)));
+    const byVendor = [...vend.values()].map((v) => ({ ...v, committed: money(v.committed), billed: money(v.billed), paid: money(v.paid), remaining: money(v.billed.minus(v.paid).lt(0) ? D(0) : v.billed.minus(v.paid)) })).sort(byDesc((v) => v.billed));
 
     const revenue = sum(fin.map((f) => f.revenue)), cost = sum(fin.map((f) => f.vendorCosts.plus(f.teamCosts).plus(f.otherExpenses)));
     const planned = sum(byWedding.map((w) => w.planned));
@@ -111,7 +116,7 @@ export class BudgetsService {
       const b = await tx.budget.create({ data: { weddingId: dto.weddingId, version: (prev?.version ?? 0) + 1, name: dto.name ?? 'Working budget', notes: dto.notes, total, createdById: actor.id, items: { create: items } }, include });
       await this.audit.log({ actorId: actor.id, weddingId: dto.weddingId, entity: 'Budget', entityId: b.id, action: 'create', message: `Created budget v${b.version} (${inr(total)})` }, tx);
       if (prev && total.gt(prev.total)) {
-        await this.approvals.requestFor({ type: 'OTHER', title: `Budget increase: ${b.wedding.name}`, description: `v${prev.version} ${inr(prev.total)} → v${b.version} ${inr(total)}`, amount: money(total.minus(prev.total)), weddingId: dto.weddingId, entity: 'Budget', entityId: b.id }, actor, tx);
+        await this.approvals.requestFor({ type: 'BUDGET_INCREASE', title: `Budget increase: ${b.wedding.name}`, description: `v${prev.version} ${inr(prev.total)} → v${b.version} ${inr(total)}`, reason: dto.notes ?? 'Budget raised above the previous version', amount: money(total.minus(prev.total)), weddingId: dto.weddingId, entity: 'Budget', entityId: b.id, sourceModule: 'budgets', sourceId: b.id }, actor, tx);
       }
       return b;
     });
@@ -132,36 +137,47 @@ export class BudgetsService {
   }
 
   /**
-   * Cash flow by month. Actuals: client payments in, vendor payments + approved expenses out. Forecast (this month onwards, overdue amounts
-   * roll into the current month): unpaid payment milestones in, remaining vendor payables + unpaid bills not tied to a booked vendor out.
+   * Cash flow by month. Actuals: client payments in (refunds out), vendor payments out (vendor reversals in), approved expenses out.
+   * Forecast (this month onwards; overdue amounts roll into the current month): unpaid payment milestones in; out = vendor payments that are
+   * requested / approved / scheduled (at their scheduled date), the rest of what each booked vendor is still owed (a week after the wedding),
+   * and unpaid bills not tied to a booked vendor. Business-wide figures count confirmed weddings only.
    */
   async cashFlow(weddingId: string | undefined, back = 6, ahead = 6) {
     const now = new Date();
     const first = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - back, 1)), last = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + ahead + 1, 0));
     const thisMonth = monthKey(now);
-    const w = weddingId ? { weddingId } : {};
-    const [pays, vpays, exps, ms, vcs, bills, weds] = await Promise.all([
-      this.prisma.clientPayment.findMany({ where: { ...w, paidAt: { gte: first, lte: last } }, select: { amount: true, paidAt: true } }),
-      this.prisma.vendorPayment.findMany({ where: { ...w, paidAt: { gte: first, lte: last } }, select: { amount: true, paidAt: true } }),
-      this.prisma.expense.findMany({ where: { ...w, status: 'APPROVED', date: { gte: first, lte: last } }, select: { amount: true, date: true } }),
-      this.prisma.paymentMilestone.findMany({ where: { ...w, wedding: { status: { not: 'CANCELLED' } } }, include: { payments: { select: { amount: true } } } }),
+    const wed = scopeWed(weddingId);
+    const w = { wedding: wed };
+    const [pays, vpays, exps, ms, vcs, bills, weds, open] = await Promise.all([
+      this.prisma.clientPayment.findMany({ where: { ...w, status: { in: ['SUCCEEDED', 'REFUNDED'] }, paidAt: { gte: first, lte: last } }, select: { amount: true, paidAt: true, reversalOfId: true } }),
+      this.prisma.vendorPayment.findMany({ where: { ...w, status: 'PAID', paidAt: { gte: first, lte: last } }, select: { amount: true, paidAt: true, reversalOfId: true } }),
+      this.prisma.expense.findMany({ where: { ...w, status: 'APPROVED', reversalOfId: null, reversedAt: null, date: { gte: first, lte: last } }, select: { amount: true, date: true } }),
+      this.prisma.paymentMilestone.findMany({ where: { ...w }, include: { payments: { select: { amount: true, status: true, reversalOfId: true } } } }),
       this.vendorCosts(weddingId),
-      this.prisma.vendorBill.findMany({ where: { ...w, status: { in: ['SUBMITTED', 'VERIFIED', 'APPROVED', 'OVERDUE'] } }, select: { id: true, total: true, amountPaid: true, dueDate: true, billDate: true, weddingId: true, vendorId: true } }),
-      this.prisma.wedding.findMany({ where: { ...(weddingId ? { id: weddingId } : {}), status: { not: 'CANCELLED' } }, select: { id: true, endDate: true } }),
+      this.prisma.vendorBill.findMany({ where: { ...w, status: { in: ['SUBMITTED', 'VERIFIED', 'APPROVED', 'PARTIALLY_PAID', 'OVERDUE'] } }, select: { id: true, total: true, amountPaid: true, dueDate: true, billDate: true, weddingId: true, vendorId: true } }),
+      this.prisma.wedding.findMany({ where: wed, select: { id: true, endDate: true } }),
+      this.prisma.vendorPayment.findMany({ where: { ...w, status: { in: RESERVING } }, select: { amount: true, status: true, scheduledFor: true, weddingVendorId: true, billId: true, requestedAt: true } }),
     ]);
     const clamp = (d: Date) => { const k = monthKey(d); return k < thisMonth ? thisMonth : k; }; // overdue / past-due forecasts land in the current month
     const ev: FlowEvent[] = [];
-    pays.forEach((p) => ev.push({ month: monthKey(p.paidAt), inflow: D(p.amount), forecast: false }));
-    vpays.forEach((p) => ev.push({ month: monthKey(p.paidAt), outflow: D(p.amount), forecast: false }));
+    pays.forEach((p) => ev.push(p.reversalOfId ? { month: monthKey(p.paidAt), outflow: D(p.amount), forecast: false } : { month: monthKey(p.paidAt), inflow: D(p.amount), forecast: false }));
+    vpays.forEach((p) => ev.push(p.reversalOfId ? { month: monthKey(p.paidAt as Date), inflow: D(p.amount), forecast: false } : { month: monthKey(p.paidAt as Date), outflow: D(p.amount), forecast: false }));
     exps.forEach((e) => ev.push({ month: monthKey(e.date), outflow: D(e.amount), forecast: false }));
+    let dueMilestoneInflow = D(0), scheduledVendorOutflow = D(0);
     for (const m of ms) {
-      const out = D(m.expectedAmount).minus(sum(m.payments.map((p) => p.amount)));
-      if (out.gt(0)) ev.push({ month: clamp(m.dueDate), inflow: out, forecast: true });
+      const out = D(m.expectedAmount).minus(clientReceived(m.payments));
+      if (out.gt(0)) { ev.push({ month: clamp(m.dueDate), inflow: out, forecast: true }); dueMilestoneInflow = dueMilestoneInflow.plus(out); }
     }
     const endOf = new Map(weds.map((x) => [x.id, x.endDate]));
     const wvIds = new Set(vcs.map((v) => `${v.weddingId}:${v.vendorId}`));
+    for (const o of open) {
+      const when = o.scheduledFor ?? o.requestedAt;
+      ev.push({ month: clamp(when), outflow: D(o.amount), forecast: true });
+      scheduledVendorOutflow = scheduledVendorOutflow.plus(o.amount);
+    }
     for (const v of vcs) {
-      const rem = v.billed.minus(v.paid);
+      const inFlight = sum(open.filter((o) => o.weddingVendorId === v.id).map((o) => o.amount));
+      const rem = v.billed.minus(v.paid).minus(inFlight);
       const end = endOf.get(v.weddingId);
       if (rem.gt(0) && end) ev.push({ month: clamp(new Date(end.getTime() + 7 * 864e5)), outflow: rem, forecast: true });
     }
@@ -177,8 +193,9 @@ export class BudgetsService {
       totals: {
         inflowActual: money(sum(months.map((m) => m.inflowActual))), outflowActual: money(sum(months.map((m) => m.outflowActual))), inflowForecast: money(sum(months.map((m) => m.inflowForecast))), outflowForecast: money(sum(months.map((m) => m.outflowForecast))),
         net: money(sum(months.map((m) => m.net))), netToDate: money(sum(past.map((m) => m.inflowActual.minus(m.outflowActual)))),
+        dueMilestoneInflow: money(dueMilestoneInflow), scheduledVendorOutflow: money(scheduledVendorOutflow),
       },
-      notes: 'Forecast inflow = unpaid client milestones by due date; forecast outflow = remaining vendor payables (a week after the wedding) plus unpaid vendor bills not tied to a booked vendor. Overdue amounts roll into the current month.',
+      notes: 'Forecast inflow = unpaid client milestones by due date; forecast outflow = vendor payments that are requested, approved or scheduled (at their date), plus the rest each booked vendor is still owed (a week after the wedding) and unpaid vendor bills not tied to a booked vendor. Overdue amounts roll into the current month. Confirmed weddings only.',
     };
   }
 }

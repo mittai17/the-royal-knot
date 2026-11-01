@@ -1,6 +1,6 @@
 import { test } from '@playwright/test';
 
-const pages = ['dashboard', 'enquiries', 'weddings', 'vendors', 'quotations', 'tasks', 'command-centre', 'guests', 'payments', 'expenses', 'reports', 'documents', 'team', 'settings'];
+const pages = ['dashboard', 'enquiries', 'weddings', 'vendors', 'procurement', 'tasks', 'command-centre', 'guests', 'payments', 'expenses', 'reports', 'documents', 'team', 'settings'];
 const tabs = ['Overview', 'Couple', 'Events', 'Vendors', 'Quotations', 'Activity'];
 
 test('capture every screen', async ({ page }) => {

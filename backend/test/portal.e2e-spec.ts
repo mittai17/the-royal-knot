@@ -39,10 +39,12 @@ beforeAll(async () => {
   url = (await app.getUrl()).replace('[::1]', '127.0.0.1');
 
   const hash = await argon2.hash(PASSWORD);
-  const planner = await prisma.user.findFirstOrThrow({ where: { role: 'PLANNER' } });
+  const planner = await prisma.user.findUniqueOrThrow({ where: { email: 'neha@royalknot.local' } }); // planners only reach weddings they are assigned to
   const couple = await prisma.couple.create({ data: { brideName: `${RUN} Bride`, groomName: `${RUN} Groom`, email: 'b@example.com' } });
   const now = Date.now();
   const wedding = await prisma.wedding.create({ data: { name: `${RUN} Wedding`, coupleId: couple.id, location: 'Goa', venue: 'Beach Hall', startDate: new Date(now - 3600e3), endDate: new Date(now + 2 * 864e5), eventDays: 3, expectedGuests: 100, plannerId: planner.id, status: 'EVENT_DAY', contractValue: 1000000 } });
+  // vendor selection (procurement sequence) needs a signed agreement
+  await prisma.agreement.create({ data: { weddingId: wedding.id, templateId: (await prisma.agreementTemplate.findFirstOrThrow()).id, status: 'SIGNED', content: 'x', amount: 0, paymentTerms: 'x' } });
   const vendor2 = await prisma.vendor.create({ data: { name: `${RUN} Caterers`, category: 'CATERING', contactName: 'V Two', phone: '+91 90000 22222' } });
   const clientB = await prisma.user.create({ data: { email: `${RUN.toLowerCase()}-client@example.com`, name: 'Client B', role: 'CLIENT', passwordHash: hash, coupleId: couple.id } });
   const vendorB = await prisma.user.create({ data: { email: `${RUN.toLowerCase()}-vendor@example.com`, name: 'Vendor B', role: 'VENDOR', passwordHash: hash, vendorId: vendor2.id } });
@@ -68,6 +70,14 @@ beforeAll(async () => {
 afterAll(async () => {
   await prisma.guest.deleteMany({ where: { weddingId: ids.wedding } });
   await prisma.document.deleteMany({ where: { weddingId: ids.wedding } });
+  // posted financial records are RESTRICTed against wedding deletion: clear them first (test data only, direct DB access)
+  { const wid = ids.wedding;
+    await prisma.vendorBillPayment.deleteMany({ where: { bill: { weddingId: wid } } });
+    await prisma.vendorPayment.deleteMany({ where: { weddingId: wid } });
+    await prisma.vendorBill.deleteMany({ where: { weddingId: wid } });
+    await prisma.clientPayment.deleteMany({ where: { weddingId: wid } });
+    await prisma.clientInvoice.deleteMany({ where: { weddingId: wid } });
+    await prisma.additionalCharge.deleteMany({ where: { reconciliation: { weddingId: wid } } }); }
   await prisma.wedding.deleteMany({ where: { id: ids.wedding } });
   await prisma.user.deleteMany({ where: { id: { in: [ids.clientB, ids.vendorB] } } });
   await prisma.vendor.deleteMany({ where: { id: ids.vendor2 } });
@@ -109,7 +119,7 @@ describe('client portal isolation', () => {
   it('guest list never leaks and foreign guests cannot be changed, deleted or invited', async () => {
     const a = d(await ag.clientA.get('/api/v1/portal/client/guests?pageSize=500'));
     expect(a.find((g: any) => g.id === ids.guest)).toBeUndefined();
-    await ag.clientA.patch(`/api/v1/portal/client/guests/${ids.guest}`).send({ rsvp: 'YES' }).expect(403);
+    await ag.clientA.patch(`/api/v1/portal/client/guests/${ids.guest}`).send({ rsvp: 'CONFIRMED' }).expect(403);
     await ag.clientA.delete(`/api/v1/portal/client/guests/${ids.guest}`).expect(403);
     await ag.clientA.post('/api/v1/portal/client/guests/invite').send({ guestIds: [ids.guest] }).expect(403);
     expect((await prisma.guest.findUniqueOrThrow({ where: { id: ids.guest } })).rsvp).toBe('PENDING');
@@ -118,9 +128,9 @@ describe('client portal isolation', () => {
     const g = d(await ag.clientB.post('/api/v1/portal/client/guests').send({ name: 'New Guest', email: 'ng@example.com', invitationStatus: 'DELIVERED' }).expect(201));
     expect(g.weddingId).toBe(ids.wedding);
     expect(g.invitationStatus).toBe('NOT_SENT'); // clients cannot self-declare invitations as delivered
-    await ag.clientB.patch(`/api/v1/portal/client/guests/${g.id}`).send({ rsvp: 'YES', invitationStatus: 'DELIVERED' }).expect(200);
+    await ag.clientB.patch(`/api/v1/portal/client/guests/${g.id}`).send({ rsvp: 'CONFIRMED', invitationStatus: 'DELIVERED' }).expect(200);
     const after = await prisma.guest.findUniqueOrThrow({ where: { id: g.id } });
-    expect(after.rsvp).toBe('YES');
+    expect(after.rsvp).toBe('CONFIRMED');
     expect(after.invitationStatus).toBe('NOT_SENT');
     const imp = d(await ag.clientB.post('/api/v1/portal/client/guests/import').send({ csv: 'name,phone\nCsv A,+91 1\nCsv A,+91 1' }).expect(201));
     expect(imp.imported).toBe(1);
@@ -215,9 +225,9 @@ describe('vendor portal isolation', () => {
     await ag.vendorA.patch(`/api/v1/portal/vendor/deliverables/${ids.wv}/contract`).send({ done: true }).expect(404);
     const del = d(await ag.vendorB.patch(`/api/v1/portal/vendor/deliverables/${ids.wv}/${d(await ag.vendorB.get('/api/v1/portal/vendor/deliverables'))[0].items[0].id}`).send({ done: true }).expect(200));
     expect(del.completed).toBe(del.total);
-    await ag.vendorA.patch(`/api/v1/portal/vendor/tasks/${ids.task}`).send({ status: 'COMPLETED' }).expect(404);
+    await ag.vendorA.patch(`/api/v1/portal/vendor/tasks/${ids.task}`).send({ status: 'DONE' }).expect(404);
     expect(d(await ag.vendorA.get('/api/v1/portal/vendor/tasks')).find((t: any) => t.id === ids.task)).toBeUndefined();
-    await ag.vendorB.patch(`/api/v1/portal/vendor/tasks/${ids.task}`).send({ status: 'DONE' }).expect(400);
+    await ag.vendorB.patch(`/api/v1/portal/vendor/tasks/${ids.task}`).send({ status: 'COMPLETED' }).expect(400);
     expect(d(await ag.vendorB.patch(`/api/v1/portal/vendor/tasks/${ids.task}`).send({ status: 'IN_PROGRESS', evidenceNote: 'started' }).expect(200)).status).toBe('IN_PROGRESS');
     await ag.vendorA.post(`/api/v1/portal/vendor/reviews/${ids.review}/respond`).send({ text: 'hi' }).expect(404);
     await ag.vendorB.post(`/api/v1/portal/vendor/reviews/${ids.review}/respond`).send({ text: 'Thank you!' }).expect(201);

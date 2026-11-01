@@ -95,8 +95,8 @@ export default function TeamPage() {
   ];
   return (
     <>
-      <PageHeader title="Team Management" subtitle="Members, active weddings, workload and task completion." actions={can('ADMIN') && <><button className="btn-secondary" onClick={() => setReassign(true)}><ArrowRightLeft className="h-4 w-4" />Reassign work</button><button className="btn-primary" onClick={() => setModal({ open: true })}><Plus className="h-4 w-4" />Add member</button></>} />
-      <Card pad={false}><DataTable columns={cols} data={rows} loading={team.loading} error={team.error} onRetry={team.reload} onRowClick={can('ADMIN') ? (u) => setModal({ open: true, member: u }) : undefined} /></Card>
+      <PageHeader title="Team Management" subtitle="Members, active weddings, workload and task completion." actions={can('FOUNDER') && <><button className="btn-secondary" onClick={() => setReassign(true)}><ArrowRightLeft className="h-4 w-4" />Reassign work</button><button className="btn-primary" onClick={() => setModal({ open: true })}><Plus className="h-4 w-4" />Add member</button></>} />
+      <Card pad={false}><DataTable columns={cols} data={rows} loading={team.loading} error={team.error} onRetry={team.reload} onRowClick={can('FOUNDER') ? (u) => setModal({ open: true, member: u }) : undefined} /></Card>
       <MemberModal key={modal.member?.id ?? 'new'} member={modal.member} open={modal.open} onClose={() => setModal({ open: false })} onSaved={team.reload} />
       <ReassignModal rows={rows} open={reassign} onClose={() => setReassign(false)} onDone={team.reload} />
     </>

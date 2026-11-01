@@ -19,7 +19,7 @@ import { ago, fmtDateTime } from '@/lib/utils';
 import { LiveWatch } from './live-watch';
 import type { IncidentRow, IncidentStats } from './types';
 
-type Tab = '' | 'OPEN' | 'IN_PROGRESS' | 'RESOLVED';
+type Tab = '' | 'REPORTED' | 'IN_PROGRESS' | 'RESOLVED';
 interface Hist { id: string; action: string; message?: string | null; createdAt: string; actor?: { name: string } | null }
 
 function IncidentDetail({ inc, ops, onClose, onChanged }: { inc: IncidentRow; ops: boolean; onClose: () => void; onChanged: () => void }) {
@@ -50,12 +50,12 @@ function IncidentDetail({ inc, ops, onClose, onChanged }: { inc: IncidentRow; op
           <div className="space-y-2">
             <Field label="Resolution note"><textarea className="input min-h-[84px]" placeholder="What was done to fix it?" value={resolution} onChange={(e) => setResolution(e.target.value)} /></Field>
             <div className="flex gap-2 justify-end">
-              {inc.status === 'OPEN' && <button disabled={busy} className="btn-secondary" onClick={() => patch({ status: 'IN_PROGRESS' }, 'Marked in progress')}><Wrench className="h-4 w-4" />Start work</button>}
+              {inc.status === 'REPORTED' && <button disabled={busy} className="btn-secondary" onClick={() => patch({ status: 'IN_PROGRESS' }, 'Marked in progress')}><Wrench className="h-4 w-4" />Start work</button>}
               <button disabled={busy || !resolution.trim()} className="btn-primary" onClick={() => patch({ status: 'RESOLVED', resolution }, 'Incident resolved')}>{busy && <Loader2 className="h-4 w-4 animate-spin" />}Mark resolved</button>
             </div>
           </div>
         ) : null}
-        {ops && resolved && <button disabled={busy} className="btn-secondary btn-sm" onClick={() => patch({ status: 'OPEN' }, 'Incident reopened')}>Reopen</button>}
+        {ops && resolved && <button disabled={busy} className="btn-secondary btn-sm" onClick={() => patch({ status: 'REPORTED' }, 'Incident reopened')}>Reopen</button>}
         <div>
           <p className="text-xs font-medium uppercase tracking-wide text-ink-soft mb-2">History</p>
           {hist.loading ? <p className="text-sm text-ink-soft">Loading…</p> : !(hist.data ?? []).length ? <p className="text-sm text-ink-soft">No history yet.</p> : (
@@ -123,7 +123,7 @@ export function IncidentsBoard() {
       </div>
       <Card pad={false}>
         <div className="flex flex-wrap items-center justify-between gap-3 p-4">
-          <Segmented<Tab> value={tab} onChange={(v) => { setTab(v); list.setPage(1); }} options={[{ v: '', l: 'All' }, { v: 'OPEN', l: 'Open' }, { v: 'IN_PROGRESS', l: 'In progress' }, { v: 'RESOLVED', l: 'Resolved' }]} />
+          <Segmented<Tab> value={tab} onChange={(v) => { setTab(v); list.setPage(1); }} options={[{ v: '', l: 'All' }, { v: 'REPORTED', l: 'Reported' }, { v: 'IN_PROGRESS', l: 'In progress' }, { v: 'RESOLVED', l: 'Resolved' }]} />
           <div className="flex flex-wrap items-center gap-2">
             <SearchInput value={list.search} onChange={list.setSearch} placeholder="Search incidents…" />
             <Select className="!w-36" value={severity} onChange={(v) => { setSeverity(v); list.setPage(1); }} options={SEVERITIES} placeholder="Any priority" />

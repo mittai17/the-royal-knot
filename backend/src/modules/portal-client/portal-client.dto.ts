@@ -6,3 +6,5 @@ export class InviteDto {
   /** Send to every guest whose invitation has not been sent yet. */
   @IsOptional() @IsBoolean() allPending?: boolean;
 }
+
+export class SelectVendorDto { @IsUUID() quotationId: string; @IsOptional() @IsString() @MaxLength(500) note?: string; }

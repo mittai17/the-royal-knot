@@ -1,4 +1,4 @@
-import { RequestStatus, VendorCategory } from '@prisma/client';
+import { QuotationStatus, VendorCategory } from '@prisma/client';
 import { Type } from 'class-transformer';
 import { ArrayMinSize, IsArray, IsBoolean, IsDateString, IsEnum, IsInt, IsNumber, IsOptional, IsString, IsUUID, Max, Min, ValidateNested } from 'class-validator';
 import { PageQuery } from '../../common/pagination';
@@ -39,5 +39,7 @@ export class SelectQuotationDto { @IsOptional() @IsString() note?: string; }
 export class RfqQuery extends PageQuery {
   @IsOptional() @IsUUID() weddingId?: string;
   @IsOptional() @IsEnum(VendorCategory) category?: VendorCategory;
-  @IsOptional() @IsEnum(RequestStatus) status?: RequestStatus;
+  @IsOptional() @IsEnum(QuotationStatus) status?: QuotationStatus;
 }
+
+export class QuotationStatusDto { @IsEnum(QuotationStatus) status: QuotationStatus; }

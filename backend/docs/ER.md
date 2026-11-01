@@ -3,7 +3,7 @@
 Money: `Decimal(14,2)` INR everywhere. Timestamps stored UTC (`timestamptz` via Prisma DateTime). IDs are UUIDs.
 
 ## Identity / team
-- **User** (role enum: ADMIN, PLANNER, EVENT_MANAGER, FINANCE, OPERATIONS; status ACTIVE/DISABLED). 1—N **RefreshToken** (hash, family, rotation + reuse detection).
+- **User** (role enum: FOUNDER, PLANNER, EVENT_MANAGER, FINANCE, OPERATIONS; status ACTIVE/DISABLED). 1—N **RefreshToken** (hash, family, rotation + reuse detection).
 - **Team** 1—N **TeamMember** N—1 User. Roles/permissions: the role enum is the role table; the permission matrix is `src/common/permissions.ts` (no Permission table — documented simplification).
 
 ## CRM

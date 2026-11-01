@@ -1,7 +1,7 @@
 import { PartialType } from '@nestjs/swagger';
 import { Priority, TaskCategory, TaskStatus } from '@prisma/client';
 import { Type } from 'class-transformer';
-import { IsArray, IsBoolean, IsDateString, IsEnum, IsInt, IsOptional, IsString, IsUUID } from 'class-validator';
+import { IsArray, IsBoolean, IsDateString, IsEnum, IsIn, IsInt, IsOptional, IsString, IsUUID } from 'class-validator';
 import { PageQuery } from '../../common/pagination';
 
 export class CreateTaskDto {
@@ -29,7 +29,11 @@ export class UpdateTaskDto {
   @IsOptional() @IsUUID() evidenceDocumentId?: string;
 }
 
-export class GenerateTasksDto { @IsOptional() @IsUUID() templateId?: string; }
+export class GenerateTasksDto {
+  @IsOptional() @IsUUID() templateId?: string;
+  /** Day-of is a subtype of the Partial package: DAY_OF narrows the Partial template to the event-day execution items. */
+  @IsOptional() @IsIn(['DAY_OF']) subtype?: 'DAY_OF';
+}
 
 export class TaskQuery extends PageQuery {
   @IsOptional() @IsEnum(TaskStatus) status?: TaskStatus;

@@ -22,7 +22,7 @@ import { FounderSettingsController, TeamController } from './team/team.controlle
 import { AdminUsersController } from './users/admin-users.controller';
 
 /**
- * System administration (SYSADMIN, plus ADMIN who always passes) and Founder settings / team management.
+ * System administration (SYSADMIN, plus FOUNDER who always passes) and Founder settings / team management.
  * Everything here is default-deny for SYSADMIN outside these controllers; financial and wedding data stay off-limits.
  */
 @Module({

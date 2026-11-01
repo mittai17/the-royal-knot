@@ -101,7 +101,7 @@ Controllers only validate/authorise; business rules live in services; money rule
 
 ### Key business rules (all verified by tests)
 - **Auth**: argon2id, 15-min JWT in HttpOnly cookie, 7-day opaque refresh token with rotation; reuse of a rotated token revokes the whole family. Disabled accounts lose access on the next request. Login/change-password are rate-limited.
-- **RBAC**: `@Roles()` on handlers; ADMIN always passes. Matrix: `GET /users/permissions`.
+- **RBAC**: `@Roles()` on handlers; FOUNDER always passes. Matrix: `GET /users/permissions`.
 - **Quotations**: server recomputes every total from line items (excluded lines never priced). Comparison flags *lowest*, *best value* (cost per included line, capacity-compliant) and *recommended* (weighted score) — the cheapest is not automatically recommended. Selection is one transaction that locks the RFQ group; a partial unique index guarantees one ACCEPTED request per RFQ.
 - **Planning**: booking payment → idempotent generation of 33 (full) / 27 (day-of) tasks. `(weddingId, templateKey)` is unique, so repeats and parallel triggers create nothing new. Dependencies block completion.
 - **Client payments**: three staged milestones (20 % booking / 40 % advance / remainder final). Milestone row is locked per payment; `idempotencyKey` is unique; over-payment is rejected; status is computed live (Upcoming/Due/Partially Paid/Paid/Overdue).

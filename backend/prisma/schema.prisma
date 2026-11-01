@@ -1,5 +1,6 @@
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
 }
 
 datasource db {
@@ -8,7 +9,7 @@ datasource db {
 }
 
 enum Role {
-  ADMIN
+  FOUNDER
   PLANNER
   EVENT_MANAGER
   FINANCE
@@ -34,11 +35,10 @@ enum EnquirySource {
 
 enum EnquiryStage {
   NEW
-  CONTACTED
-  CONSULTATION_SCHEDULED
+  INITIAL_CONSULTATION
   PROPOSAL_SENT
   NEGOTIATION
-  CONFIRMED
+  CONVERTED
   LOST
 }
 
@@ -68,7 +68,8 @@ enum AgreementStatus {
   DRAFT
   SENT
   SIGNED
-  VOID
+  REJECTED
+  EXPIRED
 }
 
 enum VendorCategory {
@@ -87,17 +88,17 @@ enum VendorCategory {
   OTHER
 }
 
-enum RequestStatus {
-  REQUESTED
-  RECEIVED
-  ACCEPTED
-  NOT_SELECTED
-}
-
+/// One canonical lifecycle for RFQ requests and quotations (MASTER_SPEC section 9).
 enum QuotationStatus {
-  SUBMITTED
-  ACCEPTED
+  DRAFT
+  SENT
+  RECEIVED
+  UNDER_REVIEW
+  COMPARED
+  SELECTED
   REJECTED
+  CLOSED
+  EXPIRED
 }
 
 enum TaskCategory {
@@ -121,9 +122,7 @@ enum TaskCategory {
 enum TaskStatus {
   TO_PLAN
   IN_PROGRESS
-  WAITING_FOR_VENDOR
-  UNDER_REVIEW
-  COMPLETED
+  DONE
   BLOCKED
 }
 
@@ -136,9 +135,8 @@ enum Priority {
 
 enum RSVP {
   PENDING
-  YES
-  NO
-  MAYBE
+  CONFIRMED
+  DECLINED
 }
 
 enum InvitationStatus {
@@ -173,6 +171,68 @@ enum PaymentMethod {
 enum VendorPaymentKind {
   ADVANCE
   FINAL
+}
+
+/// Client payment lifecycle (MASTER_SPEC section 9).
+enum PaymentStatus {
+  PENDING
+  PROCESSING
+  SUCCEEDED
+  FAILED
+  REFUNDED
+}
+
+/// Vendor payment lifecycle (MASTER_SPEC section 7); separate from VendorBillStatus.
+enum VendorPaymentStatus {
+  REQUESTED
+  APPROVED
+  SCHEDULED
+  PROCESSING
+  PAID
+  FAILED
+  CANCELLED
+}
+
+/// Wedding booking lifecycle: a wedding is a booking only once CONFIRMED (agreement signed + proposal accepted + deposit verified).
+enum BookingStatus {
+  DRAFT
+  AGREEMENT_PENDING
+  PROPOSAL_PENDING
+  DEPOSIT_PENDING
+  CONFIRMED
+  CANCELLED
+}
+
+enum ExecutionStage {
+  INITIAL_PHASE
+  VENDOR_BOOKING
+  PLANNING
+  EVENT_DAY
+  FINANCIAL_CLOSEOUT
+  COMPLETED
+}
+
+/// Wedding-level money status, kept separate from booking and execution.
+enum WeddingFinancialStatus {
+  NOT_STARTED
+  DEPOSIT_PENDING
+  PARTIALLY_PAID
+  FULLY_PAID
+  OVERDUE
+  CLOSED
+}
+
+enum EventFunctionStatus {
+  UPCOMING
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum FieldReportType {
+  DAILY
+  TASK
+  EVENT
 }
 
 enum ApprovalStatus {
@@ -210,7 +270,8 @@ enum TimelineStatus {
 }
 
 enum ArrivalStatus {
-  NOT_ARRIVED
+  EXPECTED
+  ON_THE_WAY
   ARRIVED
   DELAYED
   COMPLETED
@@ -224,9 +285,12 @@ enum Severity {
 }
 
 enum IncidentStatus {
-  OPEN
+  REPORTED
+  TRIAGED
+  ASSIGNED
   IN_PROGRESS
   RESOLVED
+  CLOSED
 }
 
 enum DocumentCategory {
@@ -261,6 +325,8 @@ model User {
   /// CLIENT users: the couple (and therefore the wedding(s)) they may see.
   coupleId           String?
   couple             Couple?    @relation(fields: [coupleId], references: [id], onDelete: SetNull)
+  /// Per-user notification preferences (channels / categories), replaces the SystemSetting `user.prefs.<id>` workaround.
+  notificationPrefs  Json?
   createdAt          DateTime   @default(now())
   updatedAt          DateTime   @updatedAt
 
@@ -278,6 +344,10 @@ model User {
   expenses           Expense[]
   documents          Document[]
   activity           ActivityLog[]
+  approvalsAssigned  Approval[]            @relation("ApprovalAssignee")
+  feedbackReplies    FeedbackReply[]
+  announcementReads  AnnouncementRead[]
+  fieldReports       FieldReport[]
 
   @@index([vendorId])
   @@index([coupleId])
@@ -321,6 +391,7 @@ model Couple {
   phone     String?
   email     String?
   address   String?
+  isDemo    Boolean   @default(false)
   createdAt DateTime  @default(now())
   enquiries Enquiry[]
   weddings  Wedding[]
@@ -367,28 +438,35 @@ model EnquiryActivity {
 }
 
 model Wedding {
-  id             String        @id @default(uuid())
-  name           String
-  coupleId       String
-  couple         Couple        @relation(fields: [coupleId], references: [id])
-  enquiryId      String?       @unique
-  location       String
-  venue          String?
-  startDate      DateTime
-  endDate        DateTime
-  eventDays      Int           @default(3)
-  expectedGuests Int           @default(0)
-  actualGuests   Int?
-  packageType    PackageType   @default(FULL_SERVICE)
-  budget         Decimal       @default(0) @db.Decimal(14, 2)
-  contractValue  Decimal       @default(0) @db.Decimal(14, 2)
-  plannerId      String?
-  planner        User?         @relation(fields: [plannerId], references: [id])
-  status         WeddingStatus @default(PLANNING)
-  theme          String?
-  coverImage     String?
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
+  id              String                 @id @default(uuid())
+  name            String
+  coupleId        String
+  couple          Couple                 @relation(fields: [coupleId], references: [id])
+  enquiryId       String?                @unique
+  location        String
+  venue           String?
+  startDate       DateTime
+  endDate         DateTime
+  eventDays       Int                    @default(3)
+  expectedGuests  Int                    @default(0)
+  actualGuests    Int?
+  packageType     PackageType            @default(FULL_SERVICE)
+  budget          Decimal                @default(0) @db.Decimal(14, 2)
+  contractValue   Decimal                @default(0) @db.Decimal(14, 2)
+  plannerId       String?
+  planner         User?                  @relation(fields: [plannerId], references: [id])
+  /// Legacy combined status; kept working until the code moves to bookingStatus + executionStage.
+  status          WeddingStatus          @default(PLANNING)
+  bookingStatus   BookingStatus          @default(DRAFT)
+  executionStage  ExecutionStage         @default(INITIAL_PHASE)
+  financialStatus WeddingFinancialStatus @default(NOT_STARTED)
+  /// The couple's "Our story" text (client portal).
+  story           String?
+  theme           String?
+  coverImage      String?
+  isDemo          Boolean                @default(false)
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
 
   events          WeddingEvent[]
   agreements      Agreement[]
@@ -420,25 +498,47 @@ model Wedding {
   checklists      Checklist[]
   proposals       Proposal[]
   reviews         VendorReview[]
+  fieldReports    FieldReport[]
 
   @@index([status])
+  @@index([bookingStatus])
+  @@index([executionStage])
   @@index([startDate])
   @@index([plannerId])
 }
 
 model WeddingEvent {
-  id             String         @id @default(uuid())
+  id             String              @id @default(uuid())
   weddingId      String
-  wedding        Wedding        @relation(fields: [weddingId], references: [id], onDelete: Cascade)
+  wedding        Wedding             @relation(fields: [weddingId], references: [id], onDelete: Cascade)
   kind           EventKind
   name           String
   date           DateTime
+  endAt          DateTime?
   venue          String?
-  expectedGuests Int            @default(0)
+  expectedGuests Int                 @default(0)
+  status         EventFunctionStatus @default(UPCOMING)
+  notes          String?
   tasks          WeddingTask[]
   timeline       TimelineItem[]
+  vendors        EventVendor[]
+  checklists     Checklist[]
+  fieldReports   FieldReport[]
 
   @@index([weddingId])
+}
+
+/// Which booked vendors work a given event function.
+model EventVendor {
+  id              String        @id @default(uuid())
+  eventId         String
+  event           WeddingEvent  @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  weddingVendorId String
+  weddingVendor   WeddingVendor @relation(fields: [weddingVendorId], references: [id], onDelete: Cascade)
+  createdAt       DateTime      @default(now())
+
+  @@unique([eventId, weddingVendorId])
+  @@index([weddingVendorId])
 }
 
 model AgreementTemplate {
@@ -462,6 +562,9 @@ model Agreement {
   amount       Decimal              @db.Decimal(14, 2)
   paymentTerms String
   documentId   String?
+  expiresAt    DateTime?
+  rejectedAt   DateTime?
+  rejectReason String?
   createdAt    DateTime             @default(now())
   signatures   AgreementSignature[]
 
@@ -482,23 +585,27 @@ model AgreementSignature {
 }
 
 model Vendor {
-  id           String         @id @default(uuid())
-  name         String
-  businessName String?
-  category     VendorCategory
-  contactName  String
-  phone        String
-  email        String?
-  address      String?
-  serviceAreas String[]
-  basePrice    Decimal?       @db.Decimal(14, 2)
-  priceUnit    String?
-  available    Boolean        @default(true)
-  rating       Decimal        @default(4) @db.Decimal(3, 2)
-  gstin        String?
-  bankDetails  String?
-  active       Boolean        @default(true)
-  createdAt    DateTime       @default(now())
+  id                String         @id @default(uuid())
+  name              String
+  businessName      String?
+  category          VendorCategory
+  contactName       String
+  phone             String
+  email             String?
+  address           String?
+  serviceAreas      String[]
+  basePrice         Decimal?       @db.Decimal(14, 2)
+  priceUnit         String?
+  available         Boolean        @default(true)
+  rating            Decimal        @default(4) @db.Decimal(3, 2)
+  gstin             String?
+  bankDetails       String?
+  active            Boolean        @default(true)
+  /// Availability calendar (replaces the SystemSetting `vendor.availability.<id>` workaround).
+  blockedDates      DateTime[]
+  availabilityNotes String?
+  isDemo            Boolean        @default(false)
+  createdAt         DateTime       @default(now())
 
   services       VendorService[]
   weddingVendors WeddingVendor[]
@@ -535,28 +642,48 @@ model WeddingVendor {
   notes            String?
   createdAt        DateTime       @default(now())
 
-  arrival    VendorArrival?
-  payments   VendorPayment[]
-  settlement VendorSettlement?
-  tasks      WeddingTask[]
+  arrival          VendorArrival?
+  payments         VendorPayment[]
+  settlement       VendorSettlement?
+  tasks            WeddingTask[]
+  deliverables     VendorDeliverable[]
+  eventAssignments EventVendor[]
 
   @@unique([weddingId, vendorId, category])
   @@index([weddingId])
 }
 
+/// Done / not-done state of a booked vendor's service deliverables (checklist derived from the accepted quotation's lines).
+model VendorDeliverable {
+  id              String         @id @default(uuid())
+  weddingVendorId String
+  weddingVendor   WeddingVendor  @relation(fields: [weddingVendorId], references: [id], onDelete: Cascade)
+  quotationItemId String?
+  quotationItem   QuotationItem? @relation(fields: [quotationItemId], references: [id], onDelete: SetNull)
+  title           String
+  done            Boolean        @default(false)
+  doneAt          DateTime?
+  doneById        String?
+  note            String?
+  createdAt       DateTime       @default(now())
+
+  @@unique([weddingVendorId, quotationItemId])
+  @@index([weddingVendorId])
+}
+
 model QuotationRequest {
-  id        String         @id @default(uuid())
+  id        String          @id @default(uuid())
   rfqGroup  String
   weddingId String
-  wedding   Wedding        @relation(fields: [weddingId], references: [id], onDelete: Cascade)
+  wedding   Wedding         @relation(fields: [weddingId], references: [id], onDelete: Cascade)
   vendorId  String
-  vendor    Vendor         @relation(fields: [vendorId], references: [id])
+  vendor    Vendor          @relation(fields: [vendorId], references: [id])
   category  VendorCategory
   title     String
   brief     String?
-  status    RequestStatus  @default(REQUESTED)
+  status    QuotationStatus @default(SENT)
   closedAt  DateTime?
-  createdAt DateTime       @default(now())
+  createdAt DateTime        @default(now())
   quotation Quotation?
 
   @@unique([rfqGroup, vendorId])
@@ -568,7 +695,7 @@ model Quotation {
   id              String           @id @default(uuid())
   requestId       String           @unique
   request         QuotationRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
-  status          QuotationStatus  @default(SUBMITTED)
+  status          QuotationStatus  @default(RECEIVED)
   menu            String?
   guests          Int?
   guestCapacity   Int?
@@ -588,18 +715,19 @@ model Quotation {
 }
 
 model QuotationItem {
-  id               String    @id @default(uuid())
+  id               String              @id @default(uuid())
   quotationId      String
-  quotation        Quotation @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+  quotation        Quotation           @relation(fields: [quotationId], references: [id], onDelete: Cascade)
   name             String
   description      String?
-  quantity         Decimal   @db.Decimal(12, 2)
+  quantity         Decimal             @db.Decimal(12, 2)
   unit             String
-  unitPrice        Decimal   @db.Decimal(14, 2)
-  taxRate          Decimal   @default(0) @db.Decimal(5, 2)
-  additionalCharge Decimal   @default(0) @db.Decimal(14, 2)
-  included         Boolean   @default(true)
-  total            Decimal   @db.Decimal(14, 2)
+  unitPrice        Decimal             @db.Decimal(14, 2)
+  taxRate          Decimal             @default(0) @db.Decimal(5, 2)
+  additionalCharge Decimal             @default(0) @db.Decimal(14, 2)
+  included         Boolean             @default(true)
+  total            Decimal             @db.Decimal(14, 2)
+  deliverables     VendorDeliverable[]
 
   @@index([quotationId])
 }
@@ -714,9 +842,13 @@ model PaymentMilestone {
 model ClientPayment {
   id             String           @id @default(uuid())
   weddingId      String
-  wedding        Wedding          @relation(fields: [weddingId], references: [id], onDelete: Cascade)
+  /// Posted money is never cascade-deleted with its wedding: Restrict.
+  wedding        Wedding          @relation(fields: [weddingId], references: [id], onDelete: Restrict)
   milestoneId    String
-  milestone      PaymentMilestone @relation(fields: [milestoneId], references: [id], onDelete: Cascade)
+  milestone      PaymentMilestone @relation(fields: [milestoneId], references: [id], onDelete: Restrict)
+  /// Optional link to the client invoice this payment settles.
+  invoiceId      String?
+  invoice        ClientInvoice?   @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
   amount         Decimal          @db.Decimal(14, 2)
   method         PaymentMethod
   reference      String?
@@ -724,29 +856,66 @@ model ClientPayment {
   idempotencyKey String           @unique
   receiptNo      String           @unique
   recordedById   String?
+  status         PaymentStatus    @default(SUCCEEDED)
+  /// Payment gateway reference / callback id (idempotent webhook handling).
+  gatewayRef     String?
+  /// Deposit / payment verification (finance confirms funds received).
+  verifiedAt     DateTime?
+  verifiedById   String?
+  /// Reversal support: a correction/refund is a new row pointing at the original; the original is never edited away.
+  reversalOfId   String?
+  reversalOf     ClientPayment?   @relation("PaymentReversal", fields: [reversalOfId], references: [id], onDelete: Restrict)
+  reversals      ClientPayment[]  @relation("PaymentReversal")
+  reversedAt     DateTime?
   createdAt      DateTime         @default(now())
 
   @@index([weddingId])
   @@index([milestoneId])
+  @@index([invoiceId])
+  @@index([status])
+  @@index([reversalOfId])
 }
 
 model VendorPayment {
-  id              String            @id @default(uuid())
+  id              String              @id @default(uuid())
   weddingId       String
-  wedding         Wedding           @relation(fields: [weddingId], references: [id], onDelete: Cascade)
+  wedding         Wedding             @relation(fields: [weddingId], references: [id], onDelete: Restrict)
   weddingVendorId String
-  weddingVendor   WeddingVendor     @relation(fields: [weddingVendorId], references: [id], onDelete: Cascade)
+  weddingVendor   WeddingVendor       @relation(fields: [weddingVendorId], references: [id], onDelete: Restrict)
   kind            VendorPaymentKind
-  amount          Decimal           @db.Decimal(14, 2)
+  amount          Decimal             @db.Decimal(14, 2)
   method          PaymentMethod
   reference       String?
-  paidAt          DateTime
-  idempotencyKey  String            @unique
+  /// Set when the payment is executed (null while REQUESTED / APPROVED / SCHEDULED).
+  paidAt          DateTime?
+  idempotencyKey  String              @unique
   recordedById    String?
-  createdAt       DateTime          @default(now())
+  status          VendorPaymentStatus @default(PAID)
+  /// Vendor bill this payment settles (optional: advances are paid against the contract).
+  billId          String?
+  bill            VendorBill?         @relation(fields: [billId], references: [id], onDelete: Restrict)
+  requestedById   String?
+  requestedAt     DateTime            @default(now())
+  approvedById    String?
+  approvedAt      DateTime?
+  approvalId      String?
+  approval        Approval?           @relation(fields: [approvalId], references: [id], onDelete: SetNull)
+  scheduledFor    DateTime?
+  failureReason   String?
+  notes           String?
+  /// Reversal support: a correction/refund is a new row pointing at the original.
+  reversalOfId    String?
+  reversalOf      VendorPayment?      @relation("VendorPaymentReversal", fields: [reversalOfId], references: [id], onDelete: Restrict)
+  reversals       VendorPayment[]     @relation("VendorPaymentReversal")
+  reversedAt      DateTime?
+  createdAt       DateTime            @default(now())
+  billPayments    VendorBillPayment[]
 
   @@index([weddingId])
   @@index([weddingVendorId])
+  @@index([status])
+  @@index([billId])
+  @@index([reversalOfId])
 }
 
 model BudgetLine {
@@ -775,6 +944,11 @@ model Expense {
   responsibleId     String?
   responsible       User?          @relation(fields: [responsibleId], references: [id])
   isTeamCost        Boolean        @default(false)
+  /// Reversal / correction entry support.
+  reversalOfId      String?
+  reversalOf        Expense?       @relation("ExpenseReversal", fields: [reversalOfId], references: [id], onDelete: Restrict)
+  reversals         Expense[]      @relation("ExpenseReversal")
+  reversedAt        DateTime?
   createdAt         DateTime       @default(now())
 
   @@index([weddingId, status])
@@ -809,7 +983,7 @@ model VendorSettlement {
 model AdditionalCharge {
   id               String         @id @default(uuid())
   reconciliationId String
-  reconciliation   Reconciliation @relation(fields: [reconciliationId], references: [id], onDelete: Cascade)
+  reconciliation   Reconciliation @relation(fields: [reconciliationId], references: [id], onDelete: Restrict)
   weddingVendorId  String?
   type             ChargeType
   description      String
@@ -850,7 +1024,7 @@ model VendorArrival {
   weddingId       String
   expectedAt      DateTime
   actualAt        DateTime?
-  status          ArrivalStatus @default(NOT_ARRIVED)
+  status          ArrivalStatus @default(EXPECTED)
   delayMinutes    Int           @default(0)
   contactName     String?
   contactPhone    String?
@@ -868,7 +1042,7 @@ model Incident {
   severity     Severity       @default(MEDIUM)
   assignedToId String?
   assignedTo   User?          @relation(fields: [assignedToId], references: [id])
-  status       IncidentStatus @default(OPEN)
+  status       IncidentStatus @default(REPORTED)
   resolution   String?
   createdAt    DateTime       @default(now())
   resolvedAt   DateTime?
@@ -877,20 +1051,21 @@ model Incident {
 }
 
 model Document {
-  id           String           @id @default(uuid())
-  weddingId    String?
-  wedding      Wedding?         @relation(fields: [weddingId], references: [id], onDelete: SetNull)
-  name         String
-  category     DocumentCategory @default(OTHER)
-  objectKey    String           @unique
-  mimeType     String
-  size         Int
-  documentKey  String
-  version      Int              @default(1)
-  allowedRoles Role[]
-  uploadedById String?
-  uploadedBy   User?            @relation(fields: [uploadedById], references: [id])
-  createdAt    DateTime         @default(now())
+  id                 String           @id @default(uuid())
+  weddingId          String?
+  wedding            Wedding?         @relation(fields: [weddingId], references: [id], onDelete: SetNull)
+  name               String
+  category           DocumentCategory @default(OTHER)
+  objectKey          String           @unique
+  mimeType           String
+  size               Int
+  documentKey        String
+  version            Int              @default(1)
+  allowedRoles       Role[]
+  uploadedById       String?
+  uploadedBy         User?            @relation(fields: [uploadedById], references: [id])
+  createdAt          DateTime         @default(now())
+  approvalsSupported Approval[]
 
   @@unique([documentKey, version])
   @@index([weddingId, category])
@@ -939,6 +1114,7 @@ enum ApprovalType {
   EXTRA_EXPENSE
   CLIENT_DISCOUNT
   VENDOR_PAYMENT
+  BUDGET_INCREASE
   OTHER
 }
 
@@ -958,26 +1134,30 @@ enum PurchaseOrderStatus {
   CANCELLED
 }
 
+/// OVERDUE is derived at read time (never required to be persisted).
 enum ClientInvoiceStatus {
   DRAFT
   SENT
   PARTIALLY_PAID
   PAID
   OVERDUE
-  VOID
+  CANCELLED
 }
 
 enum VendorBillStatus {
+  DRAFT
   SUBMITTED
   VERIFIED
   APPROVED
+  PARTIALLY_PAID
   PAID
   OVERDUE
   REJECTED
 }
 
 enum RoomAllocationStatus {
-  RESERVED
+  PENDING
+  CONFIRMED
   CHECKED_IN
   CHECKED_OUT
   CANCELLED
@@ -1041,26 +1221,41 @@ enum MediaKind {
 }
 
 model Approval {
-  id            String        @id @default(uuid())
-  type          ApprovalType
-  status        ApprovalState @default(PENDING)
-  title         String
-  description   String?
-  amount        Decimal?      @db.Decimal(14, 2)
-  weddingId     String?
-  wedding       Wedding?      @relation(fields: [weddingId], references: [id], onDelete: SetNull)
+  id                   String          @id @default(uuid())
+  /// Human readable reference, e.g. APR-2026-0001.
+  reference            String?         @unique
+  type                 ApprovalType
+  status               ApprovalState   @default(PENDING)
+  title                String
+  description          String?
+  amount               Decimal?        @db.Decimal(14, 2)
+  weddingId            String?
+  wedding              Wedding?        @relation(fields: [weddingId], references: [id], onDelete: SetNull)
   /// Polymorphic pointer to the thing being approved (entity name + id), e.g. Expense / VendorPayment / WeddingVendor.
-  entity        String?
-  entityId      String?
-  requestedById String?
-  requestedBy   User?         @relation("ApprovalRequester", fields: [requestedById], references: [id], onDelete: SetNull)
-  decidedById   String?
-  decidedBy     User?         @relation("ApprovalDecider", fields: [decidedById], references: [id], onDelete: SetNull)
-  decisionNote  String?
-  decidedAt     DateTime?
-  createdAt     DateTime      @default(now())
-  updatedAt     DateTime      @updatedAt
+  entity               String?
+  entityId             String?
+  requestedById        String?
+  requestedBy          User?           @relation("ApprovalRequester", fields: [requestedById], references: [id], onDelete: SetNull)
+  decidedById          String?
+  decidedBy            User?           @relation("ApprovalDecider", fields: [decidedById], references: [id], onDelete: SetNull)
+  decisionNote         String?
+  decidedAt            DateTime?
+  /// Why the approval is needed (the justification entered by the requester).
+  reason               String?
+  supportingDocumentId String?
+  supportingDocument   Document?       @relation(fields: [supportingDocumentId], references: [id], onDelete: SetNull)
+  /// Who is expected to decide (maker-checker routing); decidedBy records who actually did.
+  assignedApproverId   String?
+  assignedApprover     User?           @relation("ApprovalAssignee", fields: [assignedApproverId], references: [id], onDelete: SetNull)
+  /// Source module / record (e.g. "vendor-payments" + payment id); entity / entityId remain for existing code.
+  sourceModule         String?
+  sourceId             String?
+  createdAt            DateTime        @default(now())
+  updatedAt            DateTime        @updatedAt
+  vendorPayments       VendorPayment[]
 
+  @@index([sourceModule, sourceId])
+  @@index([assignedApproverId])
   @@index([status, type])
   @@index([weddingId])
   @@index([entity, entityId])
@@ -1109,7 +1304,7 @@ model ClientInvoice {
   id             String              @id @default(uuid())
   invoiceNo      String              @unique
   weddingId      String
-  wedding        Wedding             @relation(fields: [weddingId], references: [id], onDelete: Cascade)
+  wedding        Wedding             @relation(fields: [weddingId], references: [id], onDelete: Restrict)
   milestoneId    String?
   status         ClientInvoiceStatus @default(DRAFT)
   issueDate      DateTime            @default(now())
@@ -1127,6 +1322,7 @@ model ClientInvoice {
   createdAt      DateTime            @default(now())
   updatedAt      DateTime            @updatedAt
   lines          ClientInvoiceLine[]
+  payments       ClientPayment[]
 
   @@index([weddingId, status])
   @@index([dueDate])
@@ -1146,33 +1342,58 @@ model ClientInvoiceLine {
 }
 
 model VendorBill {
-  id              String           @id @default(uuid())
+  id              String              @id @default(uuid())
   billNo          String
   weddingId       String?
-  wedding         Wedding?         @relation(fields: [weddingId], references: [id], onDelete: SetNull)
+  wedding         Wedding?            @relation(fields: [weddingId], references: [id], onDelete: Restrict)
   vendorId        String
-  vendor          Vendor           @relation(fields: [vendorId], references: [id])
+  vendor          Vendor              @relation(fields: [vendorId], references: [id])
   purchaseOrderId String?
-  purchaseOrder   PurchaseOrder?   @relation(fields: [purchaseOrderId], references: [id], onDelete: SetNull)
-  status          VendorBillStatus @default(SUBMITTED)
-  billDate        DateTime         @default(now())
+  purchaseOrder   PurchaseOrder?      @relation(fields: [purchaseOrderId], references: [id], onDelete: SetNull)
+  status          VendorBillStatus    @default(SUBMITTED)
+  billDate        DateTime            @default(now())
   dueDate         DateTime?
-  subtotal        Decimal          @default(0) @db.Decimal(14, 2)
-  taxTotal        Decimal          @default(0) @db.Decimal(14, 2)
-  total           Decimal          @db.Decimal(14, 2)
-  amountPaid      Decimal          @default(0) @db.Decimal(14, 2)
+  subtotal        Decimal             @default(0) @db.Decimal(14, 2)
+  taxTotal        Decimal             @default(0) @db.Decimal(14, 2)
+  total           Decimal             @db.Decimal(14, 2)
+  amountPaid      Decimal             @default(0) @db.Decimal(14, 2)
   documentId      String?
   notes           String?
   submittedById   String?
   verifiedById    String?
   approvedById    String?
   paidAt          DateTime?
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @updatedAt
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  payments        VendorBillPayment[]
+  vendorPayments  VendorPayment[]
 
   @@unique([vendorId, billNo])
   @@index([status, dueDate])
   @@index([weddingId])
+}
+
+/// Payments applied to a vendor bill (replaces ActivityLog `pay` entries as the idempotency record).
+model VendorBillPayment {
+  id              String              @id @default(uuid())
+  billId          String
+  bill            VendorBill          @relation(fields: [billId], references: [id], onDelete: Restrict)
+  amount          Decimal             @db.Decimal(14, 2)
+  method          PaymentMethod
+  reference       String?
+  paidAt          DateTime            @default(now())
+  idempotencyKey  String              @unique
+  vendorPaymentId String?
+  vendorPayment   VendorPayment?      @relation(fields: [vendorPaymentId], references: [id], onDelete: SetNull)
+  recordedById    String?
+  reversalOfId    String?
+  reversalOf      VendorBillPayment?  @relation("BillPaymentReversal", fields: [reversalOfId], references: [id], onDelete: Restrict)
+  reversals       VendorBillPayment[] @relation("BillPaymentReversal")
+  reversedAt      DateTime?
+  createdAt       DateTime            @default(now())
+
+  @@index([billId])
+  @@index([vendorPaymentId])
 }
 
 model Budget {
@@ -1242,7 +1463,7 @@ model RoomAllocation {
   room         Room                 @relation(fields: [roomId], references: [id], onDelete: Cascade)
   guestId      String?
   guest        Guest?               @relation(fields: [guestId], references: [id], onDelete: SetNull)
-  status       RoomAllocationStatus @default(RESERVED)
+  status       RoomAllocationStatus @default(CONFIRMED)
   checkIn      DateTime
   checkOut     DateTime
   checkedInAt  DateTime?
@@ -1365,42 +1586,72 @@ model Message {
 }
 
 model Announcement {
-  id          String    @id @default(uuid())
+  id          String             @id @default(uuid())
   title       String
   body        String
   weddingId   String?
-  wedding     Wedding?  @relation(fields: [weddingId], references: [id], onDelete: SetNull)
+  wedding     Wedding?           @relation(fields: [weddingId], references: [id], onDelete: SetNull)
   /// Audience roles; empty = everyone relevant to the wedding.
   audience    Role[]
   vendorId    String?
-  pinned      Boolean   @default(false)
-  publishedAt DateTime  @default(now())
+  pinned      Boolean            @default(false)
+  publishedAt DateTime           @default(now())
   expiresAt   DateTime?
   authorId    String?
-  createdAt   DateTime  @default(now())
+  createdAt   DateTime           @default(now())
+  reads       AnnouncementRead[]
 
   @@index([weddingId, publishedAt])
 }
 
+model AnnouncementRead {
+  id             String       @id @default(uuid())
+  announcementId String
+  announcement   Announcement @relation(fields: [announcementId], references: [id], onDelete: Cascade)
+  userId         String
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  readAt         DateTime     @default(now())
+
+  @@unique([announcementId, userId])
+  @@index([userId])
+}
+
 model FeedbackRequest {
-  id                    String         @id @default(uuid())
-  kind                  FeedbackKind   @default(REQUEST)
-  status                FeedbackStatus @default(OPEN)
+  id                    String          @id @default(uuid())
+  kind                  FeedbackKind    @default(REQUEST)
+  status                FeedbackStatus  @default(OPEN)
   weddingId             String?
-  wedding               Wedding?       @relation(fields: [weddingId], references: [id], onDelete: SetNull)
+  wedding               Wedding?        @relation(fields: [weddingId], references: [id], onDelete: SetNull)
   submittedById         String?
   subject               String
   body                  String
+  /// Category (previously encoded as a `[Category] ` prefix of subject).
+  category              String?
   rating                Int?
   attachmentDocumentIds String[]
   response              String?
   assignedToId          String?
   resolvedAt            DateTime?
-  createdAt             DateTime       @default(now())
-  updatedAt             DateTime       @updatedAt
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+  replies               FeedbackReply[]
 
   @@index([weddingId, status])
   @@index([submittedById])
+  @@index([category])
+}
+
+/// Full reply history (the single `response` string keeps the latest staff reply for existing readers).
+model FeedbackReply {
+  id         String          @id @default(uuid())
+  feedbackId String
+  feedback   FeedbackRequest @relation(fields: [feedbackId], references: [id], onDelete: Cascade)
+  authorId   String?
+  author     User?           @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  body       String
+  createdAt  DateTime        @default(now())
+
+  @@index([feedbackId, createdAt])
 }
 
 model MediaAsset {
@@ -1428,10 +1679,14 @@ model Checklist {
   ownerId       String?
   /// Visible to the client portal when true.
   clientVisible Boolean         @default(false)
+  /// Optional: the event function this checklist belongs to.
+  eventId       String?
+  event         WeddingEvent?   @relation(fields: [eventId], references: [id], onDelete: SetNull)
   createdAt     DateTime        @default(now())
   items         ChecklistItem[]
 
   @@index([weddingId])
+  @@index([eventId])
 }
 
 model ChecklistItem {
@@ -1463,6 +1718,8 @@ model Proposal {
   respondedAt DateTime?
   createdById String?
   agreementId String?
+  /// Agreement template chosen when the proposal is sent.
+  templateId  String?
   createdAt   DateTime       @default(now())
   updatedAt   DateTime       @updatedAt
 
@@ -1472,18 +1729,46 @@ model Proposal {
 }
 
 model VendorReview {
-  id          String   @id @default(uuid())
+  id          String    @id @default(uuid())
   vendorId    String
-  vendor      Vendor   @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  vendor      Vendor    @relation(fields: [vendorId], references: [id], onDelete: Cascade)
   weddingId   String?
-  wedding     Wedding? @relation(fields: [weddingId], references: [id], onDelete: SetNull)
+  wedding     Wedding?  @relation(fields: [weddingId], references: [id], onDelete: SetNull)
   reviewerId  String?
   rating      Int
   punctuality Int?
   comment     String?
-  createdAt   DateTime @default(now())
+  /// The vendor's public reply to the review.
+  response    String?
+  respondedAt DateTime?
+  createdAt   DateTime  @default(now())
 
   @@index([vendorId])
+}
+
+/// Field reports (daily update / task report / event report); replaces ActivityLog `FieldReport` rows.
+model FieldReport {
+  id               String          @id @default(uuid())
+  type             FieldReportType
+  weddingId        String?
+  wedding          Wedding?        @relation(fields: [weddingId], references: [id], onDelete: SetNull)
+  authorId         String?
+  author           User?           @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  title            String
+  summary          String?
+  progress         Int?
+  issues           String?
+  nextSteps        String?
+  taskId           String?
+  eventId          String?
+  event            WeddingEvent?   @relation(fields: [eventId], references: [id], onDelete: SetNull)
+  attendance       Int?
+  photoDocumentIds String[]
+  createdAt        DateTime        @default(now())
+
+  @@index([weddingId, createdAt])
+  @@index([authorId])
+  @@index([type])
 }
 
 model MasterDataItem {

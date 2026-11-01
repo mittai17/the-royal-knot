@@ -9,10 +9,10 @@ import { ProposalsService } from './proposals.service';
 @ApiTags('proposals') @ApiCookieAuth() @Controller('proposals') @Roles(G.CRM)
 export class ProposalsController {
   constructor(private svc: ProposalsService) {}
-  @Get() list(@Query() q: ProposalQuery) { return this.svc.list(q); }
+  @Get() list(@Query() q: ProposalQuery, @CurrentUser() u: AuthUser) { return this.svc.list(q, u); }
   @Get('summary') summary() { return this.svc.summary(); }
   @Get('templates') templates() { return this.svc.templates(); }
-  @Get(':id') get(@Param('id', ParseUUIDPipe) id: string) { return this.svc.get(id); }
+  @Get(':id') get(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() u: AuthUser) { return this.svc.get(id, u); }
   @Post() create(@CurrentUser() u: AuthUser, @Body() dto: CreateProposalDto) { return this.svc.create(u, dto); }
   @Patch(':id') update(@CurrentUser() u: AuthUser, @Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateProposalDto) { return this.svc.update(u, id, dto); }
   @Post(':id/send') send(@CurrentUser() u: AuthUser, @Param('id', ParseUUIDPipe) id: string, @Body() dto: SendProposalDto) { return this.svc.send(u, id, dto.templateId); }

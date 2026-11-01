@@ -3,7 +3,7 @@ import { Reflector } from '@nestjs/core';
 import { PermissionsService } from '../roles/permissions.service';
 
 export const REQUIRE_PERMISSION = 'requirePermission';
-/** DB-backed permission check (RolePermission table, code matrix as fallback). Use together with `@UseGuards(PermissionGuard)`; runs after the global role guards. ADMIN always passes. */
+/** DB-backed permission check (RolePermission table, code matrix as fallback). Use together with `@UseGuards(PermissionGuard)`; runs after the global role guards. FOUNDER always passes. */
 export const RequirePermission = (module: string, action: 'read' | 'write' | 'approve') => SetMetadata(REQUIRE_PERMISSION, { module, action });
 
 @Injectable()

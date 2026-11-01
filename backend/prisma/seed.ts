@@ -15,7 +15,7 @@ import * as argon2 from 'argon2';
 import { deflateSync, crc32 } from 'zlib';
 import { AppModule } from '../src/app.module';
 import { AuthUser } from '../src/common/decorators';
-import { expandMatrix } from '../src/common/permissions';
+import { PERMISSION_MATRIX_VERSION, expandMatrix } from '../src/common/permissions';
 import { computeQuotation } from '../src/common/finance';
 import { syncMilestones } from '../src/common/milestones';
 import { DEFAULT_TEMPLATES } from '../src/modules/tasks/default-templates';
@@ -23,6 +23,7 @@ import { AgreementsService } from '../src/modules/agreements/agreements.service'
 import { EnquiriesService } from '../src/modules/enquiries/enquiries.service';
 import { EventsService } from '../src/modules/events/events.service';
 import { NotificationsService } from '../src/modules/notifications/notifications.service';
+import { ProposalsService } from '../src/modules/proposals/proposals.service';
 import { PaymentsService } from '../src/modules/payments/payments.service';
 import { QuotationsService } from '../src/modules/quotations/quotations.service';
 import { ReconciliationService } from '../src/modules/reconciliation/reconciliation.service';
@@ -91,7 +92,7 @@ const VENDORS: { name: string; business?: string; category: VendorCategory; cont
 ];
 
 const STAFF: { key: string; name: string; role: Role; phone: string; cost: number }[] = [
-  { key: 'founder', name: 'Aarav Royal', role: 'ADMIN', phone: '+91 98290 00001', cost: 0 },
+  { key: 'founder', name: 'Aarav Royal', role: 'FOUNDER', phone: '+91 98290 00001', cost: 0 },
   { key: 'neha', name: 'Neha Kapoor', role: 'PLANNER', phone: '+91 98290 00002', cost: 85000 },
   { key: 'arjun', name: 'Arjun Mehta', role: 'PLANNER', phone: '+91 98290 00003', cost: 85000 },
   { key: 'rahul', name: 'Rahul Singh', role: 'PLANNER', phone: '+91 98290 00004', cost: 80000 },
@@ -134,7 +135,7 @@ const SHARE: Partial<Record<VendorCategory, number>> = { VENUE: 0.24, CATERING: 
 
 /** Demo users that mirror the Keycloak realm import (fixed ids). Upserted by email, so safe to run any number of times. */
 const KEYCLOAK_USERS: { id: string; email: string; name: string; role: Role; phone: string; link?: 'mehta-couple' | 'royal-caterers' }[] = [
-  { id: '11111111-1111-1111-1111-111111111111', email: 'arjun@royalknot.in', name: 'Arjun Rao', role: 'ADMIN', phone: '+91 98290 00101' },
+  { id: '11111111-1111-1111-1111-111111111111', email: 'arjun@royalknot.in', name: 'Arjun Rao', role: 'FOUNDER', phone: '+91 98290 00101' },
   { id: '22222222-2222-2222-2222-222222222222', email: 'priya@royalknot.in', name: 'Priya Nair', role: 'PLANNER', phone: '+91 98290 00102' },
   { id: '33333333-3333-3333-3333-333333333333', email: 'kabir@royalknot.in', name: 'Kabir Sethi', role: 'EVENT_MANAGER', phone: '+91 98290 00103' },
   { id: '44444444-4444-4444-4444-444444444444', email: 'meera@royalknot.in', name: 'Meera Shah', role: 'FINANCE', phone: '+91 98290 00104' },
@@ -159,10 +160,106 @@ async function upsertKeycloakUsers() {
   console.log(`Keycloak demo users upserted: ${KEYCLOAK_USERS.map((u) => u.email).join(', ')}`);
 }
 
-/** DB-backed permission matrix, seeded from common/permissions.ts. Existing rows are left alone so admin edits survive re-seeds. */
+/**
+ * DB-backed permission matrix, seeded from common/permissions.ts. Rows are only reset when PERMISSION_MATRIX_VERSION changes
+ * (so the defaults and the DB stay consistent after a matrix change); otherwise existing rows are left alone and admin edits survive re-seeds.
+ */
 async function seedRolePermissions() {
+  const cur = await prisma.systemSetting.findUnique({ where: { key: 'permissions.matrix.version' } });
+  if (cur?.value !== PERMISSION_MATRIX_VERSION) {
+    await prisma.rolePermission.deleteMany({});
+    await prisma.systemSetting.upsert({ where: { key: 'permissions.matrix.version' }, create: { key: 'permissions.matrix.version', value: PERMISSION_MATRIX_VERSION }, update: { value: PERMISSION_MATRIX_VERSION } });
+  }
   const r = await prisma.rolePermission.createMany({ data: expandMatrix(), skipDuplicates: true });
   console.log(`RolePermission rows added: ${r.count}`);
+}
+
+/**
+ * Flags the demo dataset (weddings, vendors, couples) with isDemo so the UI can show a DEMO banner and reports can exclude it.
+ * Idempotent and safe on the no-op path: it only acts when the demo signature (the "Mehta Wedding") exists and only touches rows
+ * that belong to the seed (by name), never real data created alongside it.
+ */
+async function markDemoData() {
+  const mehta = await prisma.wedding.findFirst({ where: { name: 'Mehta Wedding' }, select: { id: true } });
+  if (!mehta) return;
+  const weddingNames = ['Mehta Wedding', ...OTHERS.map((o) => `${o.surname} Wedding`), ...DRAFTS.map((o) => `${o.surname} Wedding`)];
+  const w = await prisma.wedding.updateMany({ where: { name: { in: weddingNames }, isDemo: false }, data: { isDemo: true } });
+  const v = await prisma.vendor.updateMany({ where: { name: { in: VENDORS.map((x) => x.name) }, isDemo: false }, data: { isDemo: true } });
+  const pipelineBrides = ['Ananya Verma', 'Isha Oberoi', 'Aisha Khan', 'Pooja Nambiar', 'Sneha Rao', 'Karishma Dutta', 'Tanya Bedi', 'Nisha Pillai', 'Radhika Sen'];
+  const c = await prisma.couple.updateMany({ where: { isDemo: false, OR: [{ weddings: { some: { isDemo: true } } }, { brideName: { in: pipelineBrides } }] }, data: { isDemo: true } });
+  console.log(`Demo flag set on ${w.count} weddings, ${v.count} vendors, ${c.count} couples`);
+}
+
+/**
+ * Fresh-seed classification of the demo weddings into the separated lifecycle fields (booking / execution / financial).
+ * Same rules as the master_spec_foundation migration backfill: live weddings are CONFIRMED bookings; the execution stage derives
+ * from the legacy status; the financial status derives from milestones and payments. Demo rows only, DRAFT rows only.
+ */
+async function classifyDemoWeddings() {
+  await prisma.$executeRaw`UPDATE "Wedding" SET "bookingStatus" = CASE WHEN "status"::text = 'CANCELLED' THEN 'CANCELLED'::"BookingStatus" ELSE 'CONFIRMED'::"BookingStatus" END WHERE "isDemo" = true AND "bookingStatus" = 'DRAFT'`;
+  await prisma.$executeRaw`UPDATE "Wedding" w SET "executionStage" = CASE w."status"::text
+    WHEN 'PLANNING' THEN 'PLANNING'::"ExecutionStage" WHEN 'VENDOR_BOOKING' THEN 'VENDOR_BOOKING'::"ExecutionStage" WHEN 'EVENT_DAY' THEN 'EVENT_DAY'::"ExecutionStage"
+    WHEN 'COMPLETED' THEN (CASE WHEN EXISTS (SELECT 1 FROM "Reconciliation" r WHERE r."weddingId" = w."id" AND r."status"::text = 'OPEN') THEN 'FINANCIAL_CLOSEOUT' ELSE 'COMPLETED' END)::"ExecutionStage"
+    ELSE 'INITIAL_PHASE'::"ExecutionStage" END WHERE w."isDemo" = true AND w."executionStage" = 'INITIAL_PHASE'`;
+  await prisma.$executeRaw`UPDATE "Wedding" w SET "financialStatus" = CASE
+    WHEN w."status"::text = 'CANCELLED' THEN 'CLOSED'
+    WHEN NOT EXISTS (SELECT 1 FROM "PaymentMilestone" m WHERE m."weddingId" = w."id") THEN 'NOT_STARTED'
+    WHEN NOT EXISTS (SELECT 1 FROM "PaymentMilestone" m WHERE m."weddingId" = w."id" AND m."status"::text <> 'PAID') THEN
+      (CASE WHEN EXISTS (SELECT 1 FROM "Reconciliation" r WHERE r."weddingId" = w."id" AND r."status"::text = 'CLOSED') THEN 'CLOSED' ELSE 'FULLY_PAID' END)
+    WHEN EXISTS (SELECT 1 FROM "PaymentMilestone" m WHERE m."weddingId" = w."id" AND m."status"::text = 'OVERDUE') THEN 'OVERDUE'
+    WHEN EXISTS (SELECT 1 FROM "ClientPayment" p WHERE p."weddingId" = w."id") THEN 'PARTIALLY_PAID'
+    ELSE 'DEPOSIT_PENDING' END::"WeddingFinancialStatus" WHERE w."isDemo" = true AND w."financialStatus" = 'NOT_STARTED'`;
+  // payments recorded by the seed count as verified deposits
+  await prisma.$executeRaw`UPDATE "ClientPayment" SET "verifiedAt" = "paidAt", "verifiedById" = "recordedById" WHERE "verifiedAt" IS NULL AND "status" = 'SUCCEEDED'`;
+}
+
+/** Demo DRAFT weddings (pre-confirmation workspaces with an unsigned agreement): feed the client-portal lock and the drafts view. Additive + idempotent by wedding name. */
+const DRAFTS: { groom: string; bride: string; surname: string; city: string; venue: string; guests: number; budget: number; pkg: PackageType; offset: number; stage: 'DRAFT' | 'AGREEMENT_PENDING' | 'PROPOSAL_PENDING'; planner: 'neha' | 'arjun' | 'rahul' }[] = [
+  { groom: 'Mohit', bride: 'Tanya', surname: 'Ahlawat', city: 'Udaipur', venue: 'Fateh Garh Terrace', guests: 300, budget: 105 * L, pkg: 'FULL_SERVICE', offset: 230, stage: 'DRAFT', planner: 'neha' },
+  { groom: 'Sahil', bride: 'Karishma', surname: 'Arora', city: 'Delhi', venue: 'Taj Palace Ballroom', guests: 520, budget: 190 * L, pkg: 'FULL_SERVICE', offset: 250, stage: 'AGREEMENT_PENDING', planner: 'arjun' },
+  { groom: 'Rehan', bride: 'Aisha', surname: 'Siddiqui', city: 'Udaipur', venue: 'Lake Pichola Resort', guests: 260, budget: 80 * L, pkg: 'PARTIAL', offset: 270, stage: 'AGREEMENT_PENDING', planner: 'rahul' },
+  { groom: 'Aman', bride: 'Radhika', surname: 'Luthra', city: 'Jaipur', venue: 'Samode Haveli', guests: 150, budget: 48 * L, pkg: 'PARTIAL', offset: 290, stage: 'PROPOSAL_PENDING', planner: 'neha' },
+];
+
+async function seedDraftWeddings() {
+  const existing = new Set((await prisma.wedding.findMany({ where: { name: { in: DRAFTS.map((d) => `${d.surname} Wedding`) } }, select: { name: true } })).map((w) => w.name));
+  const todo = DRAFTS.filter((d) => !existing.has(`${d.surname} Wedding`));
+  if (!todo.length) return;
+  const planners = await prisma.user.findMany({ where: { email: { in: ['neha', 'arjun', 'rahul'].map((k) => `${k}@royalknot.local`) } } });
+  if (planners.length === 0) { console.log('Draft demo weddings skipped (no demo planners present)'); return; }
+  const toAuth = (u: { id: string; email: string; name: string; role: Role }): AuthUser => ({ id: u.id, email: u.email, name: u.name, role: u.role, mustChangePassword: false });
+  const app = await NestFactory.createApplicationContext(AppModule, { logger: ['error'] });
+  try {
+    const agreements = app.get(AgreementsService, { strict: false }), proposals = app.get(ProposalsService, { strict: false });
+    for (const d of todo) {
+      const planner = planners.find((p) => p.email.startsWith(d.planner)) ?? planners[0];
+      const pa = toAuth(planner);
+      const start = new Date(istToday(0, 0).getTime() + d.offset * DAY);
+      const contract = round1k(d.budget * 0.85);
+      const couple = await prisma.couple.create({ data: { isDemo: true, brideName: `${d.bride} ${d.surname}`, groomName: `${d.groom} ${d.surname}`, phone: `+91 9${Math.floor(100000000 + rnd() * 899999999)}`, email: `${d.groom.toLowerCase()}.${d.surname.toLowerCase()}@example.com` } });
+      const w = await prisma.$transaction(async (tx) => {
+        const ww = await tx.wedding.create({ data: { isDemo: true, name: `${d.surname} Wedding`, coupleId: couple.id, location: d.city, venue: d.venue, startDate: start, endDate: new Date(start.getTime() + 2 * DAY), eventDays: 3, expectedGuests: d.guests, packageType: d.pkg, budget: d.budget, contractValue: contract, plannerId: planner.id, status: 'PLANNING', bookingStatus: 'DRAFT', executionStage: 'INITIAL_PHASE', theme: 'Draft — details being finalised' } });
+        for (const [i, k] of (['MEHENDI', 'SANGEET', 'CEREMONY'] as EventKind[]).entries()) await tx.weddingEvent.create({ data: { weddingId: ww.id, kind: k, name: { MEHENDI: 'Mehendi', SANGEET: 'Sangeet', CEREMONY: 'Wedding Ceremony' }[k as string]!, date: new Date(start.getTime() + i * DAY), venue: d.venue, expectedGuests: d.guests } });
+        await syncMilestones(tx, ww, contract);
+        return ww;
+      });
+      if (d.stage === 'DRAFT') {
+        // an agreement exists only as an unsent draft: bookingStatus stays DRAFT
+        const tpl = await prisma.agreementTemplate.findFirst({ where: { packageType: d.pkg } });
+        if (tpl) await prisma.agreement.create({ data: { weddingId: w.id, templateId: tpl.id, version: 1, status: 'DRAFT', paymentTerms: '', content: tpl.body.replace(/\{\{(\w+)\}\}/g, (_, k) => ({ couple: `${d.bride} & ${d.groom}`, wedding: w.name })[k as string] ?? ''), amount: contract } });
+      } else if (d.stage === 'AGREEMENT_PENDING') {
+        await agreements.generate(w.id, undefined, pa); // SENT, unsigned
+      } else {
+        const a = await agreements.generate(w.id, undefined, pa);
+        await agreements.sign(a.id, { signerName: `${d.groom} ${d.surname}`, signerRole: 'CLIENT', signatureData: signaturePng(2) }, pa, '10.0.0.7');
+        await agreements.sign(a.id, { signerName: planner.name, signerRole: 'PLANNER', signatureData: signaturePng(4) }, pa, '10.0.0.8');
+        const pr = await proposals.create(pa, { title: `${w.name} — proposal`, weddingId: w.id, amount: Number(contract) } as any);
+        await proposals.send(pa, pr.id).catch(() => undefined); // generates a newer agreement version; the signed one stays the signed fact
+      }
+      await prisma.wedding.update({ where: { id: w.id }, data: { createdAt: daysFromNow(-20) } });
+    }
+    console.log(`Draft demo weddings ensured: ${todo.map((d) => `${d.surname} (${d.stage})`).join(', ')}`);
+  } finally { await app.close(); }
 }
 
 async function wipe() {
@@ -178,6 +275,8 @@ async function main() {
     console.log(`Database already has data (${existingWeddings} weddings, ${existingUsers} users) — skipping destructive seed. Ensuring Keycloak demo users are upserted.`);
     await upsertKeycloakUsers();
     await seedRolePermissions();
+    await markDemoData();
+    if (await prisma.wedding.findFirst({ where: { name: 'Mehta Wedding' }, select: { id: true } })) await seedDraftWeddings();
     return;
   }
   await wipe();
@@ -203,14 +302,14 @@ async function main() {
   const vendors: Record<string, string> = {};
   const vendorRows = [];
   for (const v of VENDORS) {
-    const row = await prisma.vendor.create({ data: { name: v.name, businessName: v.business ?? v.name, category: v.category, contactName: v.contact, phone: v.phone, email: `${v.name.toLowerCase().replace(/[^a-z]+/g, '.')}@vendors.local`, address: `${v.areas[0]}, Rajasthan`, serviceAreas: v.areas, basePrice: v.base, priceUnit: v.unit, rating: v.rating, gstin: `08AAAC${Math.floor(1000 + rnd() * 8999)}A1Z${Math.floor(rnd() * 9)}`, bankDetails: `HDFC Bank · A/c ****${Math.floor(1000 + rnd() * 8999)}`, available: rnd() > 0.1, services: { create: [{ name: `${v.category[0] + v.category.slice(1).toLowerCase()} — standard`, unit: v.unit, price: v.base }] } } });
+    const row = await prisma.vendor.create({ data: { name: v.name, businessName: v.business ?? v.name, category: v.category, contactName: v.contact, phone: v.phone, email: `${v.name.toLowerCase().replace(/[^a-z]+/g, '.')}@vendors.local`, address: `${v.areas[0]}, Rajasthan`, serviceAreas: v.areas, basePrice: v.base, priceUnit: v.unit, rating: v.rating, isDemo: true, gstin: `08AAAC${Math.floor(1000 + rnd() * 8999)}A1Z${Math.floor(rnd() * 9)}`, bankDetails: `HDFC Bank · A/c ****${Math.floor(1000 + rnd() * 8999)}`, available: rnd() > 0.1, services: { create: [{ name: `${v.category[0] + v.category.slice(1).toLowerCase()} — standard`, unit: v.unit, price: v.base }] } } });
     vendors[v.name] = row.id; vendorRows.push(row);
   }
 
   // ---------- app context for service-driven flows ----------
   const app = await NestFactory.createApplicationContext(AppModule, { logger: ['error'] });
   const get = <T,>(c: new (...a: any[]) => T) => app.get(c, { strict: false });
-  const enquiries = get(EnquiriesService), agreements = get(AgreementsService), quotations = get(QuotationsService), payments = get(PaymentsService), tasks = get(TasksService), events = get(EventsService), recon = get(ReconciliationService), vendorsSvc = get(VendorsService), notif = get(NotificationsService);
+  const enquiries = get(EnquiriesService), agreements = get(AgreementsService), proposals = get(ProposalsService), quotations = get(QuotationsService), payments = get(PaymentsService), tasks = get(TasksService), events = get(EventsService), recon = get(ReconciliationService), vendorsSvc = get(VendorsService), notif = get(NotificationsService);
   const neha = users.neha, meera = users.meera, priya = users.priya, founder = users.founder;
 
   // =====================================================================
@@ -218,17 +317,22 @@ async function main() {
   // =====================================================================
   const mehtaStart = new Date(istToday(0, 0).getTime() - 2 * DAY); // day 3 of 3 is today → event day
   const enq = await enquiries.create({ brideName: 'Ananya Verma', groomName: 'Rohan Mehta', phone: '+91 98110 55501', email: 'rohan.mehta@example.com', source: 'INSTAGRAM', preferredDate: mehtaStart.toISOString(), location: 'Jaipur', guestCount: 400, budget: 15 * CR / 10, theme: 'Royal Rajputana winter celebration', packageType: 'FULL_SERVICE', assignedToId: neha.id, followUpAt: daysFromNow(-90).toISOString(), notes: 'Found us on Instagram. Winter wedding in Jaipur, 3 days, 400 guests. Family wants a palace venue and live counters.' } as any, neha);
-  for (const [stage, note] of [['CONTACTED', 'Intro call with Rohan and his father'], ['CONSULTATION_SCHEDULED', 'Consultation at the Jaipur studio'], ['PROPOSAL_SENT', 'Sent full-service proposal with 3 vendor shortlists'], ['NEGOTIATION', 'Negotiated contract value to ₹1.35 Cr']] as const) {
+  for (const [stage, note] of [['INITIAL_CONSULTATION', 'Intro call and consultation at the Jaipur studio'], ['PROPOSAL_SENT', 'Sent full-service proposal with 3 vendor shortlists'], ['NEGOTIATION', 'Negotiated contract value to ₹1.35 Cr']] as const) {
     await enquiries.update(enq.id, { stage } as any, neha); await enquiries.addActivity(enq.id, note, 'note', neha);
   }
   const wedding = await enquiries.convert(enq.id, { name: 'Mehta Wedding', venue: 'Jaipur Palace', startDate: mehtaStart.toISOString(), eventDays: 3, expectedGuests: 400, contractValue: 135 * L, plannerId: neha.id } as any, neha);
   const WID = wedding.id;
   await prisma.wedding.update({ where: { id: WID }, data: { theme: 'Royal Rajputana winter celebration' } });
 
-  // agreement → signed (PDF stored in MinIO when Gotenberg/MinIO are reachable)
-  const agr = await agreements.generate(WID, undefined, neha);
+  // accepted proposal -> agreement generated by sending it -> signed by both sides (signing syncs the proposal to ACCEPTED). Confirmation itself happens
+  // below, through the real PaymentsService.verify hook, once the booking deposit is verified.
+  const prop = await proposals.create(neha, { title: 'Mehta Wedding — Full-Service Proposal', weddingId: WID, packageName: 'Full-Service', amount: 135 * L, content: 'Full-service planning for a 3-day Jaipur wedding, 400 guests.' } as any);
+  await proposals.send(neha, prop.id);
+  const agr = { id: (await prisma.proposal.findUniqueOrThrow({ where: { id: prop.id } })).agreementId! };
   await agreements.sign(agr.id, { signerName: 'Rohan Mehta', signerRole: 'CLIENT', signatureData: signaturePng(1) }, neha, '10.0.0.5');
   await agreements.sign(agr.id, { signerName: 'Neha Kapoor', signerRole: 'PLANNER', signatureData: signaturePng(3) }, neha, '10.0.0.6');
+  const mehtaProposal = await prisma.proposal.findUniqueOrThrow({ where: { id: prop.id } });
+  if (mehtaProposal.status !== 'ACCEPTED') await proposals.respond(neha, prop.id, 'ACCEPTED');
 
   // 3 caterer quotations, structured lines, winner = recommended (not cheapest)
   const rfq = await quotations.createRfq({ weddingId: WID, category: 'CATERING', title: 'Catering — 3-day wedding, 400 guests', brief: 'Mehendi lunch, Sangeet dinner and wedding banquet. Vegetarian + Jain counters. Live counters required.', vendorIds: [vendors['Spice Route Caterers'], vendors['Maharaja Feast Co.'], vendors['Royal Caterers']] }, neha);
@@ -267,7 +371,9 @@ async function main() {
 
   // client payments: booking (→ auto-generates the checklist) and advance
   const bookingRes = await payments.record({ weddingId: WID, milestone: 'BOOKING', amount: 2700000, method: 'BANK_TRANSFER', reference: 'NEFT-HDFC-20260711-4481', paidAt: daysFromNow(-112).toISOString(), idempotencyKey: 'seed-mehta-booking' } as any, meera);
-  console.log(`  Mehta booking recorded → ${bookingRes.tasksGenerated?.created} tasks generated`);
+  // maker-checker: Founder verifies Finance's deposit -> confirmIfReady -> CONFIRMED + planning tasks (only here)
+  await payments.verify(bookingRes.payment.id, 'Seed: deposit seen in bank statement', founder);
+  console.log(`  Mehta booking verified → ${(await prisma.weddingTask.count({ where: { weddingId: WID } }))} tasks generated at confirmation`);
   await payments.record({ weddingId: WID, milestone: 'ADVANCE', amount: 5400000, method: 'BANK_TRANSFER', reference: 'NEFT-HDFC-20260926-7712', paidAt: daysFromNow(-36).toISOString(), idempotencyKey: 'seed-mehta-advance' } as any, meera);
 
   // checklist progress: 92% complete, rest in motion
@@ -275,16 +381,16 @@ async function main() {
   const keep = new Set(['final-vendor-brief', 'post-close', 'cater-headcount']);
   for (const t of mTasks) {
     if (keep.has(t.templateKey!)) continue;
-    await prisma.weddingTask.update({ where: { id: t.id }, data: { status: 'COMPLETED', completedAt: new Date(t.dueDate.getTime() - between(0.5, 6) * DAY), evidenceNote: t.category === 'VENUE' ? 'Signed venue contract and layout PDF filed' : undefined } });
+    await prisma.weddingTask.update({ where: { id: t.id }, data: { status: 'DONE', completedAt: new Date(t.dueDate.getTime() - between(0.5, 6) * DAY), evidenceNote: t.category === 'VENUE' ? 'Signed venue contract and layout PDF filed' : undefined } });
   }
   await prisma.weddingTask.updateMany({ where: { weddingId: WID, templateKey: 'final-vendor-brief' }, data: { status: 'IN_PROGRESS' } });
-  await prisma.weddingTask.updateMany({ where: { weddingId: WID, templateKey: 'cater-headcount' }, data: { status: 'UNDER_REVIEW', evidenceNote: 'Caterer asked to confirm 460 plates — pending written confirmation' } });
+  await prisma.weddingTask.updateMany({ where: { weddingId: WID, templateKey: 'cater-headcount' }, data: { status: 'IN_PROGRESS', evidenceNote: 'Caterer asked to confirm 460 plates — pending written confirmation' } });
   await prisma.weddingTask.updateMany({ where: { weddingId: WID, templateKey: 'cater-headcount' }, data: { dueDate: daysFromNow(-1) } });
 
   // vendor advances (≈45%)
   for (const [name, wvId] of Object.entries(wvIds)) {
     const wv = await prisma.weddingVendor.findUniqueOrThrow({ where: { id: wvId } });
-    await payments.recordVendor(WID, { weddingVendorId: wvId, kind: 'ADVANCE', amount: Math.round(Number(wv.contractAmount) * 0.45 / 100) * 100, method: 'BANK_TRANSFER', reference: `ADV-${name.slice(0, 3).toUpperCase()}-${Math.floor(1000 + rnd() * 8999)}`, paidAt: daysFromNow(-between(40, 95)).toISOString(), idempotencyKey: `seed-mehta-adv-${wvId}` } as any, meera);
+    await payments.recordVendor(WID, { weddingVendorId: wvId, kind: 'ADVANCE', amount: Math.round(Number(wv.contractAmount) * 0.45 / 100) * 100, method: 'BANK_TRANSFER', reference: `ADV-${name.slice(0, 3).toUpperCase()}-${Math.floor(1000 + rnd() * 8999)}`, paidAt: daysFromNow(-between(40, 95)).toISOString(), idempotencyKey: `seed-mehta-adv-${wvId}` } as any, founder);
   }
 
   // event day: schedule, arrivals, incident, guest counts
@@ -304,24 +410,25 @@ async function main() {
     else if (ageMin > 60) await events.updateTimeline(t.id, { status: 'COMPLETED', actualAt: new Date(at.getTime() + (delay ?? 0) * 60000).toISOString() } as any, priya);
     else if (ageMin > 0) await events.updateTimeline(t.id, { status: 'IN_PROGRESS', actualAt: at.toISOString() } as any, priya);
   }
-  const arrivals: [string, number, 'ARRIVED' | 'DELAYED' | 'NOT_ARRIVED' | 'COMPLETED', number][] = [
+  const arrivals: [string, number, 'ARRIVED' | 'DELAYED' | 'EXPECTED' | 'COMPLETED', number][] = [
     ['Floral Dreams Decor', 9 * 60 + 45, 'COMPLETED', 0], ['Regal Mandap Decorators', 10 * 60, 'ARRIVED', 5], ['Royal Caterers', 11 * 60 + 30, 'ARRIVED', 0], ['Lens & Light Photography', 12 * 60 + 15, 'ARRIVED', 0], ['Cine Vows Films', 12 * 60 + 15, 'ARRIVED', 10],
-    ['SkyFrame Drones', 16 * 60, 'NOT_ARRIVED', 0], ['Glow by Anita', 9 * 60, 'COMPLETED', 0], ['Dhol Dhamaka Drummers', 18 * 60 + 30, 'NOT_ARRIVED', 0], ['DJ Beatbox Entertainment', 11 * 60 + 50, 'DELAYED', 30], ['Rhythm Live Band', 15 * 60, 'ARRIVED', 0],
+    ['SkyFrame Drones', 16 * 60, 'EXPECTED', 0], ['Glow by Anita', 9 * 60, 'COMPLETED', 0], ['Dhol Dhamaka Drummers', 18 * 60 + 30, 'EXPECTED', 0], ['DJ Beatbox Entertainment', 11 * 60 + 50, 'DELAYED', 30], ['Rhythm Live Band', 15 * 60, 'ARRIVED', 0],
     ['Sound Sutra Audio', 10 * 60 + 30, 'ARRIVED', 0], ['Lumen Lighting Co.', 11 * 60, 'ARRIVED', 0], ['Rajputana Cabs & Coaches', 8 * 60, 'ARRIVED', 0], ['Heritage Stays Collective', 8 * 60, 'COMPLETED', 0], ['Henna House Artists', 9 * 60, 'COMPLETED', 0],
-    ['Vedic Rituals & Pandits', 18 * 60, 'NOT_ARRIVED', 0], ['Sky Sparkle Fireworks', 20 * 60, 'NOT_ARRIVED', 0], ['Amber Palace Venues', 7 * 60, 'COMPLETED', 0],
+    ['Vedic Rituals & Pandits', 18 * 60, 'EXPECTED', 0], ['Sky Sparkle Fireworks', 20 * 60, 'EXPECTED', 0], ['Amber Palace Venues', 7 * 60, 'COMPLETED', 0],
   ];
   for (const [name, minutes, status, delay] of arrivals) {
     const expected = istToday(Math.floor(minutes / 60), minutes % 60);
     const actuallyHappened = status === 'ARRIVED' || status === 'COMPLETED' || status === 'DELAYED';
-    const effective: typeof status = status !== 'NOT_ARRIVED' && expected > NOW && status !== 'DELAYED' ? 'NOT_ARRIVED' : status;
+    const effective: typeof status = status !== 'EXPECTED' && expected > NOW && status !== 'DELAYED' ? 'EXPECTED' : status;
     await events.setArrival(wvIds[name], { status: effective, expectedAt: expected.toISOString(), actualAt: effective === 'ARRIVED' || effective === 'COMPLETED' ? new Date(expected.getTime() + delay * 60000).toISOString() : undefined, delayMinutes: delay || undefined } as any, vendorActor(name));
     void actuallyHappened;
   }
   function vendorActor(_n: string) { return users.vikram; }
   const inc1 = await events.createIncident(WID, { title: 'DJ arrives late', description: 'DJ Beatbox Entertainment is 30 minutes behind schedule; sound check delayed. Backup playlist and band standby arranged.', severity: 'HIGH', assignedToId: priya.id }, priya);
-  await events.updateIncident(inc1.id, { status: 'IN_PROGRESS' }, priya);
+  const walk = async (id: string, path: string[], actor: AuthUser, extra: any = {}) => { for (const [i, st] of path.entries()) await events.updateIncident(id, { status: st, ...(i === path.length - 1 ? extra : {}) } as any, actor); };
+  await walk(inc1.id, ['TRIAGED', 'ASSIGNED', 'IN_PROGRESS'], priya);
   const inc2 = await events.createIncident(WID, { title: 'Florist requests extra generator', description: 'Decoration crew needs an additional 25 kVA generator for the mandap lighting rig.', severity: 'MEDIUM', assignedToId: users.vikram.id }, users.vikram);
-  await events.updateIncident(inc2.id, { status: 'RESOLVED', resolution: 'Second generator arranged from Lumen Lighting; installed at 11:40.' }, users.vikram);
+  await walk(inc2.id, ['TRIAGED', 'ASSIGNED', 'IN_PROGRESS', 'RESOLVED'], users.vikram, { resolution: 'Second generator arranged from Lumen Lighting; installed at 11:40.' });
   await events.createIncident(WID, { title: "Bride's vehicle delayed", description: 'Bridal car stuck behind a procession near Sanganer; ETA +20 minutes.', severity: 'MEDIUM', assignedToId: users.karan.id }, users.karan);
   await events.createIncident(WID, { title: 'Catering needs extra resources', description: 'Banquet captain requests 6 additional service staff for the live counters.', severity: 'LOW', assignedToId: users.karan.id }, priya);
 
@@ -334,8 +441,8 @@ async function main() {
   let heads = 0, plusLeft = 110;
   for (let i = 0; i < 290; i++) {
     const plus = plusLeft > 0 && rnd() < 0.38 ? 1 : 0; plusLeft -= plus; heads += 1 + plus;
-    const r = rnd(); const rsvp = r < 0.62 ? 'YES' : r < 0.7 ? 'NO' : r < 0.75 ? 'MAYBE' : 'PENDING';
-    const checked = rsvp === 'YES' && rnd() < 0.7;
+    const r = rnd(); const rsvp = r < 0.62 ? 'CONFIRMED' : r < 0.7 ? 'DECLINED' : r < 0.75 ? 'PENDING' : 'PENDING';
+    const checked = rsvp === 'CONFIRMED' && rnd() < 0.7;
     guestRows.push({ weddingId: WID, name: `${pick(first)} ${pick(last)}`, phone: `+91 9${Math.floor(100000000 + rnd() * 899999999)}`, email: rnd() < 0.5 ? `guest${i}@example.com` : null, groupName: pick(groups), category: pick(['Bride side', 'Groom side', 'Friends']), invitationStatus: rnd() < 0.9 ? 'DELIVERED' : 'SENT', rsvp, plusOnes: plus, dietary: pick(diets), accommodationNeeded: rnd() < 0.3, checkedIn: checked, checkedInAt: checked ? new Date(NOW.getTime() - between(5, 240) * 60000) : null, checkedInCount: checked ? 1 + plus : 0 });
   }
   guestRows[0].plusOnes = (guestRows[0].plusOnes ?? 0) + (400 - heads); // land exactly on 400 invited heads
@@ -358,7 +465,7 @@ async function main() {
   }
   // Glow by Anita and Henna House are fully done → settle them through the service
   const rec = await prisma.reconciliation.findUniqueOrThrow({ where: { weddingId: WID } });
-  for (const n of ['Glow by Anita', 'Henna House Artists']) await recon.settle(rec.id, { weddingVendorId: wvIds[n], method: 'BANK_TRANSFER', reference: `FINAL-${n.slice(0, 4).toUpperCase()}`, idempotencyKey: `seed-mehta-settle-${n.slice(0, 4)}` } as any, meera);
+  for (const n of ['Glow by Anita', 'Henna House Artists']) await recon.settle(rec.id, { weddingVendorId: wvIds[n], method: 'BANK_TRANSFER', reference: `FINAL-${n.slice(0, 4).toUpperCase()}`, idempotencyKey: `seed-mehta-settle-${n.slice(0, 4)}` } as any, founder);
 
   // expenses (planned vs actual)
   const exp = (category: string, description: string, amount: number, status: 'APPROVED' | 'PENDING' | 'REJECTED', daysAgo: number, extra: Partial<Prisma.ExpenseUncheckedCreateInput> = {}) => prisma.expense.create({ data: { weddingId: WID, category, description, amount, date: daysFromNow(-daysAgo), status, method: 'BANK_TRANSFER', responsibleId: pick([users.priya.id, users.vikram.id, users.neha.id]), ...extra } });
@@ -387,9 +494,9 @@ async function main() {
     const planner = planners[idx % 3];
     const start = new Date(istToday(0, 0).getTime() + c.offset * DAY);
     const contract = round1k(c.budget * between(0.8, 0.9));
-    const couple = await prisma.couple.create({ data: { brideName: `${c.bride} ${c.surname}`, groomName: `${c.groom} ${c.surname}`, phone: `+91 9${Math.floor(100000000 + rnd() * 899999999)}`, email: `${c.groom.toLowerCase()}.${c.surname.toLowerCase()}@example.com` } });
+    const couple = await prisma.couple.create({ data: { isDemo: true, brideName: `${c.bride} ${c.surname}`, groomName: `${c.groom} ${c.surname}`, phone: `+91 9${Math.floor(100000000 + rnd() * 899999999)}`, email: `${c.groom.toLowerCase()}.${c.surname.toLowerCase()}@example.com` } });
     const w = await prisma.$transaction(async (tx) => {
-      const ww = await tx.wedding.create({ data: { name: `${c.surname} Wedding`, coupleId: couple.id, location: c.city, venue: c.venue, startDate: start, endDate: new Date(start.getTime() + 2 * DAY), eventDays: 3, expectedGuests: c.guests, packageType: c.pkg, budget: c.budget, contractValue: contract, plannerId: planner.id, status: c.status, theme: pick(['Regal Rajputana', 'Floral Pastel Garden', 'Modern Minimal Luxe', 'Royal Maroon & Gold', 'Beachside Boho']) } });
+      const ww = await tx.wedding.create({ data: { isDemo: true, name: `${c.surname} Wedding`, coupleId: couple.id, location: c.city, venue: c.venue, startDate: start, endDate: new Date(start.getTime() + 2 * DAY), eventDays: 3, expectedGuests: c.guests, packageType: c.pkg, budget: c.budget, contractValue: contract, plannerId: planner.id, status: c.status, bookingStatus: 'CONFIRMED', theme: pick(['Regal Rajputana', 'Floral Pastel Garden', 'Modern Minimal Luxe', 'Royal Maroon & Gold', 'Beachside Boho']) } });
       const kinds: EventKind[] = ['MEHENDI', 'SANGEET', 'CEREMONY', 'RECEPTION'];
       for (const [i, k] of kinds.entries()) await tx.weddingEvent.create({ data: { weddingId: ww.id, kind: k, name: { MEHENDI: 'Mehendi', SANGEET: 'Sangeet', CEREMONY: 'Wedding Ceremony', RECEPTION: 'Reception', HALDI: 'Haldi', OTHER: 'Event' }[k], date: new Date(start.getTime() + Math.min(i, 2) * DAY), venue: c.venue, expectedGuests: c.guests } });
       await syncMilestones(tx, ww, contract);
@@ -442,7 +549,7 @@ async function main() {
       }
       if (!lateFinal) await prisma.reconciliation.update({ where: { id: r.id }, data: { status: 'CLOSED', closedAt: daysFromNow(c.offset + 14) } });
       await tasks.generate(w.id, {}, planner);
-      await prisma.weddingTask.updateMany({ where: { weddingId: w.id }, data: { status: 'COMPLETED', completedAt: start } });
+      await prisma.weddingTask.updateMany({ where: { weddingId: w.id }, data: { status: 'DONE', completedAt: start } });
     } else {
       const booked = c.offset <= 150;
       if (booked) await pay('BOOKING', 1, Math.min(120, 200 - c.offset * 0.3));
@@ -459,14 +566,14 @@ async function main() {
         const target = Math.max(0.1, Math.min(0.85, 1 - c.offset / 170));
         const done = Math.floor(tl.length * target);
         for (const [i, t] of tl.entries()) {
-          if (i < done) await prisma.weddingTask.update({ where: { id: t.id }, data: { status: 'COMPLETED', completedAt: daysFromNow(-between(1, 30)) } });
-          else if (i < done + 3) await prisma.weddingTask.update({ where: { id: t.id }, data: { status: pick(['IN_PROGRESS', 'WAITING_FOR_VENDOR', 'UNDER_REVIEW', 'BLOCKED']) } });
+          if (i < done) await prisma.weddingTask.update({ where: { id: t.id }, data: { status: 'DONE', completedAt: daysFromNow(-between(1, 30)) } });
+          else if (i < done + 3) await prisma.weddingTask.update({ where: { id: t.id }, data: { status: pick(['IN_PROGRESS', 'IN_PROGRESS', 'BLOCKED']) } });
         }
       }
       // upcoming weddings: some guest records for the nearest ones
       if (['Sharma', 'Kapoor', 'Agarwal'].includes(c.surname)) {
         const n = c.surname === 'Sharma' ? 70 : 45;
-        await prisma.guest.createMany({ data: Array.from({ length: n }, (_, i) => ({ weddingId: w.id, name: `${pick(first)} ${pick(last)}`, phone: `+91 9${Math.floor(100000000 + rnd() * 899999999)}`, groupName: pick(groups), category: pick(['Bride side', 'Groom side', 'Friends']), plusOnes: rnd() < 0.3 ? 1 : 0, rsvp: pick(['YES', 'YES', 'PENDING', 'NO', 'MAYBE']) as any, invitationStatus: rnd() < 0.8 ? 'SENT' : 'NOT_SENT', accommodationNeeded: rnd() < 0.3, dietary: pick(diets) })) });
+        await prisma.guest.createMany({ data: Array.from({ length: n }, (_, i) => ({ weddingId: w.id, name: `${pick(first)} ${pick(last)}`, phone: `+91 9${Math.floor(100000000 + rnd() * 899999999)}`, groupName: pick(groups), category: pick(['Bride side', 'Groom side', 'Friends']), plusOnes: rnd() < 0.3 ? 1 : 0, rsvp: pick(['CONFIRMED', 'CONFIRMED', 'PENDING', 'DECLINED', 'PENDING']) as any, invitationStatus: rnd() < 0.8 ? 'SENT' : 'NOT_SENT', accommodationNeeded: rnd() < 0.3, dietary: pick(diets) })) });
         void i0();
       }
     }
@@ -492,15 +599,15 @@ async function main() {
   void sharmaRfqCaterers;
 
   // ---------- pipeline enquiries ----------
-  const enquirySeeds: [string, string, string, string, 'NEW' | 'CONTACTED' | 'CONSULTATION_SCHEDULED' | 'PROPOSAL_SENT' | 'NEGOTIATION' | 'LOST', any, string, number, number, number, string][] = [
-    ['Isha Oberoi', 'Kabir Oberoi', 'Jaipur', 'WHATSAPP', 'CONSULTATION_SCHEDULED', 'neha', 'Winter wedding · palace venue', 400, 15 * CR / 10, -1, 'Referred by the Mehta family. Wants a winter palace wedding in Jaipur. Consultation booked.'],
+  const enquirySeeds: [string, string, string, string, 'NEW' | 'INITIAL_CONSULTATION' | 'PROPOSAL_SENT' | 'NEGOTIATION' | 'LOST', any, string, number, number, number, string][] = [
+    ['Isha Oberoi', 'Kabir Oberoi', 'Jaipur', 'WHATSAPP', 'INITIAL_CONSULTATION', 'neha', 'Winter wedding · palace venue', 400, 15 * CR / 10, -1, 'Referred by the Mehta family. Wants a winter palace wedding in Jaipur. Consultation booked.'],
     ['Aisha Khan', 'Rehan Siddiqui', 'Udaipur', 'REFERRAL', 'PROPOSAL_SENT', 'arjun', 'Lakeside nikah & reception', 260, 85 * L, 2, 'Lake Pichola view essential.'],
     ['Pooja Nambiar', 'Amit Chadha', 'Goa', 'INSTAGRAM', 'NEW', 'rahul', 'Beach sunset ceremony', 180, 60 * L, 0, 'DM on Instagram; asked for beach package.'],
-    ['Sneha Rao', 'Vikram Bhatt', 'Jaipur', 'WEBSITE', 'CONTACTED', 'neha', 'Pastel garden wedding', 320, 90 * L, -2, 'Website form submission.'],
+    ['Sneha Rao', 'Vikram Bhatt', 'Jaipur', 'WEBSITE', 'NEW', 'neha', 'Pastel garden wedding', 320, 90 * L, -2, 'Website form submission.'],
     ['Karishma Dutta', 'Sahil Arora', 'Delhi', 'PHONE', 'NEGOTIATION', 'arjun', 'Modern luxe ballroom', 550, 2 * CR, 3, 'Negotiating on vendor pass-through fees.'],
     ['Tanya Bedi', 'Mohit Ahlawat', 'Udaipur', 'WHATSAPP', 'NEW', 'rahul', 'Royal heritage wedding', 300, 110 * L, -3, 'Followed up after WhatsApp enquiry.'],
     ['Nisha Pillai', 'Rajat Ghosh', 'Jodhpur', 'OTHER', 'LOST', 'neha', 'Fort wedding', 200, 70 * L, 0, 'Family chose an in-house planner.'],
-    ['Radhika Sen', 'Aman Luthra', 'Jaipur', 'REFERRAL', 'CONTACTED', 'arjun', 'Boho minimal', 150, 50 * L, 1, 'Referred by Joshi wedding.'],
+    ['Radhika Sen', 'Aman Luthra', 'Jaipur', 'REFERRAL', 'NEW', 'arjun', 'Boho minimal', 150, 50 * L, 1, 'Referred by Joshi wedding.'],
   ];
   for (const [bride, groom, city, source, stage, who, theme, guests, budget, followDays, notes] of enquirySeeds) {
     const e = await enquiries.create({ brideName: bride, groomName: groom, phone: `+91 9${Math.floor(100000000 + rnd() * 899999999)}`, source, preferredDate: daysFromNow(between(60, 240)).toISOString(), location: city, guestCount: guests, budget, theme, packageType: rnd() < 0.8 ? 'FULL_SERVICE' : 'PARTIAL', assignedToId: users[who as string].id, followUpAt: daysFromNow(followDays).toISOString(), notes } as any, users[who as string]);
@@ -514,7 +621,11 @@ async function main() {
     const tailN = Math.floor(logs.length * tailShare);
     const headN = logs.length - tailN;
     const times = logs.map((_, i) => i < headN ? new Date(from.getTime() + (to.getTime() - from.getTime()) * (i / Math.max(1, headN))) : new Date(NOW.getTime() - (logs.length - i) * 4 * 60000));
-    await prisma.$executeRaw`UPDATE "ActivityLog" a SET "createdAt" = v.t FROM (SELECT unnest(${logs.map((l) => l.id)}::text[]) AS id, unnest(${times}::timestamptz[]) AS t) v WHERE a.id = v.id`;
+    // ActivityLog is append-only (DB trigger); the seed backdates its own demo history inside a maintenance transaction.
+    await prisma.$transaction([
+      prisma.$executeRaw`SELECT set_config('app.audit_maintenance', 'on', true)`,
+      prisma.$executeRaw`UPDATE "ActivityLog" a SET "createdAt" = v.t FROM (SELECT unnest(${logs.map((l) => l.id)}::text[]) AS id, unnest(${times}::timestamptz[]) AS t) v WHERE a.id = v.id`,
+    ]);
   };
   await spread(WID, daysFromNow(-125), daysFromNow(-3), 0.35);
   for (const [surname, id] of Object.entries(cfgBy)) {
@@ -553,6 +664,9 @@ async function main() {
   await app.close();
   await upsertKeycloakUsers();
   await seedRolePermissions();
+  await markDemoData();
+  await classifyDemoWeddings();
+  await seedDraftWeddings(); // after classification: drafts must stay drafts
 
   const counts = { users: await prisma.user.count(), weddings: await prisma.wedding.count(), vendors: await prisma.vendor.count(), tasks: await prisma.weddingTask.count(), mehtaTasks: await prisma.weddingTask.count({ where: { weddingId: WID } }), guests: await prisma.guest.count(), enquiries: await prisma.enquiry.count(), quotations: await prisma.quotation.count(), payments: await prisma.clientPayment.count(), expenses: await prisma.expense.count(), notifications: await prisma.notification.count(), activity: await prisma.activityLog.count(), documents: await prisma.document.count() };
   console.log('Seed complete:', counts);

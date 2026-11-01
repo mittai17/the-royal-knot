@@ -10,8 +10,8 @@ import { GuestsService } from './guests.service';
 @ApiTags('guests') @ApiCookieAuth() @Controller()
 export class GuestsController {
   constructor(private svc: GuestsService) {}
-  @Get('weddings/:id/guests') list(@Param('id', ParseUUIDPipe) id: string, @Query() q: GuestQuery) { return this.svc.list(id, q); }
-  @Get('weddings/:id/guests/stats') stats(@Param('id', ParseUUIDPipe) id: string) { return this.svc.stats(id); }
+  @Get('weddings/:id/guests') list(@Param('id', ParseUUIDPipe) id: string, @Query() q: GuestQuery, @CurrentUser() u: AuthUser) { return this.svc.list(id, q, u); }
+  @Get('weddings/:id/guests/stats') stats(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() u: AuthUser) { return this.svc.stats(id, u); }
   @Post('weddings/:id/guests') @Roles(G.ALL) create(@Param('id', ParseUUIDPipe) id: string, @Body() dto: CreateGuestDto, @CurrentUser() u: AuthUser) { return this.svc.create(id, dto, u); }
   @Post('weddings/:id/guests/import') @Roles(G.PLANNING) @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }))
   import(@Param('id', ParseUUIDPipe) id: string, @Body() dto: ImportGuestsDto, @UploadedFile() file: Express.Multer.File | undefined, @CurrentUser() u: AuthUser) {

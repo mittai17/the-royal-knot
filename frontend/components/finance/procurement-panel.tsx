@@ -76,7 +76,7 @@ export function ProcurementPanel() {
               {rfqs.data?.map((r) => (
                 <tr key={r.rfqGroup}>
                   <td className="td font-medium">{r.title}<Muted><D v={r.createdAt} /></Muted></td><td className="td">{r.wedding.name}</td><td className="td">{humanize(r.category)}</td>
-                  <td className="td tabular-nums">{r.received} / {r.invited}</td><td className="td"><StatusBadge status={r.status === 'DECIDED' ? 'CONFIRMED' : r.status === 'READY_TO_COMPARE' ? 'RECEIVED' : 'PENDING'} />
+                  <td className="td tabular-nums">{r.received} / {r.invited}</td><td className="td"><StatusBadge status={r.status === 'DECIDED' ? 'SELECTED' : r.status === 'READY_TO_COMPARE' ? 'RECEIVED' : 'PENDING'} />
                     <Muted>{humanize(r.status)}</Muted></td>
                   <td className="td">{r.purchaseOrder ? <button className="text-burgundy text-sm" onClick={() => { setTab('pos'); setPoId(r.purchaseOrder!.id); }}>{r.purchaseOrder.poNumber}</button> : '—'}</td>
                   <td className="td text-right whitespace-nowrap">
@@ -99,7 +99,7 @@ export function ProcurementPanel() {
                     <tr key={q.quotationId}>
                       <td className="td font-medium">{q.vendor.name}</td><td className="td">{q.vendor.rating.toFixed(1)}</td><td className="td tabular-nums">{inr(q.grandTotal)}</td><td className="td tabular-nums">{q.pricePerPlate ? inr(q.pricePerPlate) : '—'}</td><td className="td">{q.includedCount}</td>
                       <td className="td"><span className="flex flex-wrap gap-1">{q.flags.lowest && <StatusBadge status="Lowest" tone="success" />}{q.flags.bestValue && <StatusBadge status="Best value" tone="info" />}{q.flags.recommended && <StatusBadge status="Recommended" tone="gold" />}{q.requestStatus === 'ACCEPTED' && <StatusBadge status="Selected" tone="burgundy" />}</span></td>
-                      <td className="td text-right">{q.requestStatus === 'ACCEPTED' && <Can roles={['PLANNER', 'FINANCE']}><BusyButton className="btn-primary btn-sm" busy={busy === q.quotationId} onClick={() => createPo(q.quotationId)}><Award className="h-3.5 w-3.5" />Create PO</BusyButton></Can>}</td>
+                      <td className="td text-right">{q.requestStatus === 'SELECTED' && <Can roles={['PLANNER', 'FINANCE']}><BusyButton className="btn-primary btn-sm" busy={busy === q.quotationId} onClick={() => createPo(q.quotationId)}><Award className="h-3.5 w-3.5" />Create PO</BusyButton></Can>}</td>
                     </tr>
                   ))}
                 </SimpleTable>

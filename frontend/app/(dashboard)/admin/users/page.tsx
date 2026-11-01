@@ -23,7 +23,7 @@ function UserModal({ user, open, onClose, onSaved, onTemp }: { user?: User; open
   const [confirm, setConfirm] = useState<null | 'deactivate' | 'reset'>(null);
   const { busy, run } = useBusy();
   const logins = useApi<Login[]>(user && open ? `/admin/users/${user.id}/logins` : null);
-  const internalRoles = ROLES.filter((r) => r.v !== 'CLIENT' && r.v !== 'VENDOR' && (me?.role === 'ADMIN' || r.v !== 'ADMIN'));
+  const internalRoles = ROLES.filter((r) => r.v !== 'CLIENT' && r.v !== 'VENDOR' && (me?.role === 'FOUNDER' || r.v !== 'FOUNDER'));
   const external = user && (user.role === 'CLIENT' || user.role === 'VENDOR');
   const self = user?.id === me?.id;
   const save = () => run('save', async () => {

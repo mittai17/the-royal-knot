@@ -28,17 +28,17 @@ export class ProcurementService {
   constructor(private prisma: PrismaService, private audit: AuditService, private notif: NotificationsService, private quotations: QuotationsService, private scope: ScopeService, private pdf: PdfService) {}
 
   /** RFQ rounds (one row per sourcing request) with the PO already raised from the winning quote, if any. */
-  async rfqs(q: { weddingId?: string; category?: VendorCategory }) {
-    const groups = await this.quotations.listGroups({ ...q, page: 1, pageSize: 500, order: 'desc' } as never);
+  async rfqs(q: { weddingId?: string; category?: VendorCategory }, u?: AuthUser) {
+    const groups = await this.quotations.listGroups({ ...q, page: 1, pageSize: 500, order: 'desc' } as never, u);
     const accepted = await this.prisma.purchaseOrder.findMany({ where: { quotationId: { not: null }, status: { not: 'CANCELLED' } }, select: { id: true, poNumber: true, quotationId: true } });
     const poByQuote = new Map(accepted.map((p) => [p.quotationId!, p]));
     return groups.map((g) => {
-      const winner = g.requests.find((r) => r.status === 'ACCEPTED');
+      const winner = g.requests.find((r) => r.status === 'SELECTED');
       return { ...g, winnerQuotationId: winner?.quotationId ?? null, purchaseOrder: winner?.quotationId ? poByQuote.get(winner.quotationId) ?? null : null };
     });
   }
 
-  comparison(weddingId: string, category?: VendorCategory, rfqGroup?: string) { return this.quotations.comparison(weddingId, category, rfqGroup); }
+  comparison(weddingId: string, category?: VendorCategory, rfqGroup?: string, u?: AuthUser) { return this.quotations.comparison(weddingId, category, rfqGroup, u); }
 
   async list(q: PoQuery, u: AuthUser) {
     const where: Prisma.PurchaseOrderWhereInput = {
@@ -75,7 +75,7 @@ export class ProcurementService {
     if (dto.quotationId) {
       const q = await this.prisma.quotation.findUnique({ where: { id: dto.quotationId }, include: { items: true, request: true } });
       if (!q) throw new NotFoundException('Quotation not found');
-      if (q.status !== 'ACCEPTED') throw new UnprocessableEntityException('A purchase order can only be raised from the selected (accepted) quotation');
+      if (q.status !== 'SELECTED') throw new UnprocessableEntityException('A purchase order can only be raised from the selected (accepted) quotation');
       if (await this.prisma.purchaseOrder.count({ where: { quotationId: q.id, status: { not: 'CANCELLED' } } })) throw new ConflictException('A purchase order already exists for this quotation');
       weddingId = q.request.weddingId; vendorId = q.request.vendorId; quotationId = q.id;
       lines = q.items.filter((i) => i.included).map((i) => ({ description: i.name + (i.description ? ` — ${i.description}` : ''), quantity: i.quantity, unit: i.unit, unitPrice: i.unitPrice, taxRate: i.taxRate }));

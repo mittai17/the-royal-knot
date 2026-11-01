@@ -41,6 +41,9 @@ afterAll(async () => {
   for (const k of keys) await prisma.clientPayment.deleteMany({ where: { idempotencyKey: { startsWith: k } } });
   await prisma.approval.deleteMany({ where: { entityId: { in: [...made.invoices, ...made.bills] } } });
   await prisma.clientInvoice.deleteMany({ where: { id: { in: made.invoices } } });
+  // posted rows are RESTRICT-protected against their bill: remove the settlement rows first (test data only)
+  await prisma.vendorBillPayment.deleteMany({ where: { billId: { in: made.bills } } });
+  await prisma.vendorPayment.deleteMany({ where: { billId: { in: made.bills } } });
   await prisma.vendorBill.deleteMany({ where: { id: { in: made.bills } } });
   await prisma.paymentMilestone.update({ where: { id: milestoneId }, data: { status: 'UPCOMING' } }).catch(() => undefined);
   await prisma.$disconnect();

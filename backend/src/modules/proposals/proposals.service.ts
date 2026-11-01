@@ -3,6 +3,9 @@ import { Prisma, ProposalStatus } from '@prisma/client';
 import { AuthUser } from '../../common/decorators';
 import { Paginated, skipTake } from '../../common/pagination';
 import { PrismaService } from '../../database/prisma.service';
+import { ScopeService } from '../../common/scope.service';
+import { assertTransition, PROPOSAL_TRANSITIONS } from '../../common/state-machines';
+import { WeddingsService } from '../weddings/weddings.service';
 import { AuditService } from '../audit/audit.service';
 import { AgreementsService } from '../agreements/agreements.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -19,7 +22,7 @@ export function statusFromAgreement(current: ProposalStatus, agreementStatus?: s
 
 @Injectable()
 export class ProposalsService {
-  constructor(private prisma: PrismaService, private audit: AuditService, private agreements: AgreementsService, private notif: NotificationsService) {}
+  constructor(private prisma: PrismaService, private audit: AuditService, private agreements: AgreementsService, private notif: NotificationsService, private scope: ScopeService, private weddings: WeddingsService) {}
 
   /** Moves SENT proposals to ACCEPTED once the linked agreement is signed (the signature flow is the source of truth). */
   private async sync(rows: Row[]) {
@@ -56,10 +59,11 @@ export class ProposalsService {
     });
   }
 
-  async list(q: ProposalQuery) {
+  async list(q: ProposalQuery, u?: AuthUser) {
     const where: Prisma.ProposalWhereInput = {
+      ...(u && this.scope.isScoped(u) ? { OR: [{ weddingId: null }, { wedding: this.scope.weddingWhere(u) }] } : {}),
       ...(q.status ? { status: q.status } : {}), ...(q.weddingId ? { weddingId: q.weddingId } : {}), ...(q.enquiryId ? { enquiryId: q.enquiryId } : {}),
-      ...(q.search ? { OR: [{ title: { contains: q.search, mode: 'insensitive' } }, { packageName: { contains: q.search, mode: 'insensitive' } }, { wedding: { name: { contains: q.search, mode: 'insensitive' } } }] } : {}),
+      ...(q.search ? { AND: [{ OR: [{ title: { contains: q.search, mode: 'insensitive' } }, { packageName: { contains: q.search, mode: 'insensitive' } }, { wedding: { name: { contains: q.search, mode: 'insensitive' } } }] }] } : {}),
     };
     const [rows, total] = await Promise.all([this.prisma.proposal.findMany({ where, orderBy: { createdAt: 'desc' }, include, ...skipTake(q) }), this.prisma.proposal.count({ where })]);
     return new Paginated(await this.shape(rows), { page: q.page, pageSize: q.pageSize, total });
@@ -72,17 +76,18 @@ export class ProposalsService {
     return out;
   }
 
-  private async load(id: string) {
+  private async load(id: string, u?: AuthUser) {
     const r = await this.prisma.proposal.findUnique({ where: { id }, include });
     if (!r) throw new NotFoundException('Proposal not found');
+    if (u && r.weddingId) await this.scope.assertWeddingAccess(u, r.weddingId); // IDOR
     return r;
   }
 
-  async get(id: string) { return (await this.shape([await this.load(id)]))[0]; }
+  async get(id: string, u?: AuthUser) { return (await this.shape([await this.load(id, u)]))[0]; }
 
   async create(u: AuthUser, dto: CreateProposalDto) {
     if (!dto.weddingId && !dto.enquiryId) throw new BadRequestException('Link the proposal to a wedding or an enquiry');
-    if (dto.weddingId && !(await this.prisma.wedding.count({ where: { id: dto.weddingId } }))) throw new NotFoundException('Wedding not found');
+    if (dto.weddingId) { if (!(await this.prisma.wedding.count({ where: { id: dto.weddingId } }))) throw new NotFoundException('Wedding not found'); await this.scope.assertWeddingAccess(u, dto.weddingId); }
     if (dto.enquiryId && !(await this.prisma.enquiry.count({ where: { id: dto.enquiryId } }))) throw new NotFoundException('Enquiry not found');
     const row = await this.prisma.proposal.create({
       data: { title: dto.title.trim(), weddingId: dto.weddingId ?? null, enquiryId: dto.enquiryId ?? null, packageName: dto.packageName, amount: dto.amount ?? 0, content: dto.content, validUntil: dto.validUntil ? new Date(dto.validUntil) : null, createdById: u.id },
@@ -93,9 +98,9 @@ export class ProposalsService {
   }
 
   async update(u: AuthUser, id: string, dto: UpdateProposalDto) {
-    const cur = await this.load(id);
+    const cur = await this.load(id, u);
     if (cur.status !== 'DRAFT') throw new ConflictException('Only draft proposals can be edited');
-    if (dto.weddingId && !(await this.prisma.wedding.count({ where: { id: dto.weddingId } }))) throw new NotFoundException('Wedding not found');
+    if (dto.weddingId) { if (!(await this.prisma.wedding.count({ where: { id: dto.weddingId } }))) throw new NotFoundException('Wedding not found'); await this.scope.assertWeddingAccess(u, dto.weddingId); }
     const row = await this.prisma.proposal.update({
       where: { id },
       data: { ...(dto.title ? { title: dto.title.trim() } : {}), ...(dto.weddingId ? { weddingId: dto.weddingId } : {}), ...(dto.packageName !== undefined ? { packageName: dto.packageName } : {}), ...(dto.amount !== undefined ? { amount: dto.amount } : {}), ...(dto.content !== undefined ? { content: dto.content } : {}), ...(dto.validUntil ? { validUntil: new Date(dto.validUntil) } : {}) },
@@ -107,8 +112,8 @@ export class ProposalsService {
 
   /** Sends the proposal. With a wedding, the existing agreement flow generates the agreement that the client signs. */
   async send(u: AuthUser, id: string, templateId?: string) {
-    const cur = await this.load(id);
-    if (cur.status !== 'DRAFT') throw new ConflictException('This proposal was already sent');
+    const cur = await this.load(id, u);
+    assertTransition('Proposal', PROPOSAL_TRANSITIONS, cur.status, 'SENT');
     let agreementId: string | null = null;
     if (cur.weddingId) agreementId = (await this.agreements.generate(cur.weddingId, templateId, u)).id;
     const row = await this.prisma.proposal.update({ where: { id }, data: { status: 'SENT', sentAt: new Date(), agreementId }, include });
@@ -117,21 +122,23 @@ export class ProposalsService {
       const clients = w ? await this.prisma.user.findMany({ where: { coupleId: w.coupleId, role: 'CLIENT', status: 'ACTIVE' }, select: { id: true } }) : [];
       if (clients.length) await this.notif.notify({ type: 'proposal', title: 'A proposal is ready for your signature', body: row.title, link: '/client-portal/documents', userIds: clients.map((c) => c.id) }).catch(() => undefined);
     }
+    if (row.weddingId) await this.weddings.refreshBookingStatus(row.weddingId);
     await this.audit.log({ actorId: u.id, weddingId: row.weddingId, entity: 'Proposal', entityId: id, action: 'send', message: agreementId ? `Sent "${row.title}" for signature (agreement generated)` : `Marked "${row.title}" as sent`, meta: { agreementId } });
     return (await this.shape([row]))[0];
   }
 
   /** Records the client's decision when it did not come through the signature flow. */
   async respond(u: AuthUser, id: string, status: 'ACCEPTED' | 'DECLINED') {
-    const cur = await this.load(id);
-    if (cur.status !== 'SENT' && cur.status !== 'VIEWED') throw new ConflictException('Only sent proposals can be accepted or declined');
+    const cur = await this.load(id, u);
+    assertTransition('Proposal', PROPOSAL_TRANSITIONS, cur.status, status);
     const row = await this.prisma.proposal.update({ where: { id }, data: { status, respondedAt: new Date() }, include });
     await this.audit.log({ actorId: u.id, weddingId: row.weddingId, entity: 'Proposal', entityId: id, action: status.toLowerCase(), message: `Proposal "${row.title}" ${status.toLowerCase()}` });
+    if (row.weddingId) await this.weddings.confirmIfReady(row.weddingId, u); // an accepted final proposal can complete the confirmation guard
     return (await this.shape([row]))[0];
   }
 
   async remove(u: AuthUser, id: string) {
-    const cur = await this.load(id);
+    const cur = await this.load(id, u);
     if (cur.status !== 'DRAFT') throw new ConflictException('Only draft proposals can be deleted');
     await this.prisma.proposal.delete({ where: { id } });
     await this.audit.log({ actorId: u.id, weddingId: cur.weddingId, entity: 'Proposal', entityId: id, action: 'delete', message: `Deleted draft "${cur.title}"` });

@@ -18,7 +18,7 @@ export class AuditQuery extends PageQuery {
   @IsOptional() @IsIn(['json', 'csv']) @Type(() => String) format?: 'json' | 'csv';
 }
 
-@ApiTags('audit') @ApiCookieAuth() @Controller('audit') @Roles(Role.ADMIN, Role.SYSADMIN, Role.FINANCE)
+@ApiTags('audit') @ApiCookieAuth() @Controller('audit') @Roles(Role.FOUNDER, Role.SYSADMIN, Role.FINANCE)
 export class AuditController {
   constructor(private prisma: PrismaService) {}
 
